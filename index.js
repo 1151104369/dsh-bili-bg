@@ -226,8 +226,27 @@ export function apply(ctx) {
               sendJson(res, 400, { ok: false, error: '需要 bvid 或 aid 参数' })
               return
             }
+            // 附带一个"直连本机 HTTP"的 mediaBase：页面经过 dsh-app:// 的转发层会丢掉
+            // 响应的 Content-Length，导致 <video> 无法建立可 seek 的时长/范围（表现为
+            // 能顺序播放、但一拖进度条就回 0）。让媒体直连 127.0.0.1:<port> 可拿到完整
+            // 的 206/Content-Range，拖动就正常了。客户端失败时会自动回退到相对代理地址。
+            const mediaBase = (() => {
+              try {
+                const ws = child.webServer
+                if (!ws || !ws.port) return ''
+                const proto = String(ws.protocol || 'http')
+                return (proto.indexOf(':') >= 0 ? proto : proto + ':') + '//127.0.0.1:' + String(ws.port)
+              } catch {
+                return ''
+              }
+            })()
             resolveBvid(input)
-              .then((result) => sendJson(res, result.ok ? 200 : 422, result))
+              .then((result) => {
+                if (mediaBase !== '' && result && typeof result.src === 'string' && result.src.charAt(0) === '/') {
+                  result.mediaBase = mediaBase
+                }
+                sendJson(res, result.ok ? 200 : 422, result)
+              })
               .catch((error) => sendJson(res, 500, { ok: false, error: describe(error) }))
           },
         }),

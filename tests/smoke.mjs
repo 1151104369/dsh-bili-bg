@@ -29,6 +29,8 @@ const fakeCtx = {
   inject(_deps, cb) {
     const child = {
       webServer: {
+        port: 55999,
+        protocol: 'http:',
         register({ path, handler }) {
           routes.set(path, handler)
           return () => routes.delete(path)
@@ -102,6 +104,7 @@ ok('play', play.ok === true && play.bvid === 'BV1GJ411x7h7' && !!play.src, {
   title: play.title,
   quality: play.quality,
 })
+ok('play exposes direct mediaBase', play.mediaBase === 'http://127.0.0.1:55999', { base: play.mediaBase })
 
 // play via full url
 const playUrl = await (

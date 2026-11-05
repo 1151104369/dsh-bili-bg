@@ -101,6 +101,10 @@
     progressDragging: false,
     pendingSeek: null,
     resume: true,
+    duration: 0,
+    srcRel: '',
+    srcAbs: '',
+    srcFallback: false,
     launcher: null,
     queue: [],
     index: -1,
@@ -282,11 +286,30 @@
 
     video.addEventListener('loadeddata', function () {
       video.setAttribute('data-shown', '1')
+      applyPendingSeek()
     })
+    video.addEventListener('canplay', applyPendingSeek)
     video.addEventListener('error', function () {
-      if (video.error) onVideoError('播放源出错（' + video.error.code + '）')
+      if (!video.error) return
+      // 直连本机 HTTP 失败（跨源/端口不可达）时，回退到同源代理地址再试一次。
+      if (!st.srcFallback && st.srcAbs !== '' && typeof video.src === 'string' && video.src.indexOf(st.srcAbs) !== -1) {
+        st.srcFallback = true
+        setStatus('直连播放失败，改用代理重试', '')
+        try {
+          video.src = st.srcRel
+          var played = video.play()
+          if (played && typeof played.catch === 'function') played.catch(noop)
+        } catch (e) {
+          /* ignore */
+        }
+        return
+      }
+      onVideoError('播放源出错（' + video.error.code + '）')
     })
     video.addEventListener('ended', onEnded)
+    video.addEventListener('seeked', function () {
+      updateProgressUi()
+    })
     video.addEventListener('loadedmetadata', onLoadedMetadata)
     video.addEventListener('timeupdate', onTimeUpdate)
     video.addEventListener('pause', function () {
@@ -295,19 +318,24 @@
     return layer
   }
 
+  /** 把"续播"暂存的位置落到 video 上（元数据/数据就绪时各试一次）。 */
+  function applyPendingSeek() {
+    if (st.pendingSeek === null || video === null) return
+    var target = st.pendingSeek
+    try {
+      var dur = isFinite(video.duration) && video.duration > 0 ? video.duration : st.duration
+      if (dur <= 0) return
+      video.currentTime = Math.max(0, Math.min(target, dur))
+      st.pendingSeek = null
+    } catch (e) {
+      /* 还没就绪，留给下一个事件再试 */
+    }
+  }
+
   /** 元数据就绪：刷新进度条上限，并应用"续播"暂存的跳转位置。 */
   function onLoadedMetadata() {
     updateProgressUi()
-    if (st.pendingSeek !== null && video !== null) {
-      var seekTo = st.pendingSeek
-      st.pendingSeek = null
-      try {
-        var dur = isFinite(video.duration) ? video.duration : seekTo
-        video.currentTime = Math.max(0, Math.min(seekTo, dur))
-      } catch (e) {
-        /* ignore */
-      }
-    }
+    applyPendingSeek()
   }
 
   /** 播放中：更新进度条；每 5 秒落一次进度，保证重启能接着播。 */
@@ -327,11 +355,13 @@
     var dur = 0
     var cur = 0
     try {
-      dur = isFinite(video.duration) ? video.duration : 0
+      dur = isFinite(video.duration) && video.duration > 0 ? video.duration : 0
       cur = isFinite(video.currentTime) ? video.currentTime : 0
     } catch (e) {
       /* ignore */
     }
+    // 浏览器还没解析出时长时，用播放接口返回的 duration 兜底，保证进度条刻度正确。
+    if (dur <= 0 && st.duration > 0) dur = st.duration
     if (progressRange !== null) {
       if (dur > 0) {
         progressRange.max = String(dur)
@@ -450,11 +480,25 @@
           }
           st.current = data
           st.failStreak = 0
+          st.duration = num(data.duration, 0, 0, 1e9)
+          st.srcRel = data.src
+          st.srcAbs = ''
+          st.srcFallback = false
+          var src = data.src
+          if (
+            typeof data.mediaBase === 'string' &&
+            data.mediaBase !== '' &&
+            typeof src === 'string' &&
+            src.charAt(0) === '/'
+          ) {
+            st.srcAbs = data.mediaBase + src
+            src = st.srcAbs
+          }
           showLayer()
           if (layer === null) ensureLayer()
           if (video !== null) {
             video.removeAttribute('data-shown')
-            video.src = data.src
+            video.src = src
             video.loop = !st.carousel
             video.setAttribute('data-fit', st.fit === 'cover' ? 'cover' : 'width')
             try {
@@ -665,6 +709,21 @@
       title: st.current && st.current.title ? st.current.title : '',
       playing: st.playing === true,
       time: Math.round(time * 10) / 10,
+      // 诊断：重启后若续播/拖动仍有问题，看这几个值就能判断是拿不到时长还是 seek 失败。
+      diag: {
+        rs: video !== null ? video.readyState : null,
+        dur: video !== null && isFinite(video.duration) ? video.duration : null,
+        seekableEnd: (function () {
+          try {
+            if (video !== null && video.seekable && video.seekable.length > 0) return video.seekable.end(0)
+          } catch (e) {
+            /* ignore */
+          }
+          return null
+        })(),
+        cur: video !== null && isFinite(video.currentTime) ? video.currentTime : null,
+        src: st.srcFallback ? 'proxy' : st.srcAbs !== '' ? 'direct' : 'proxy',
+      },
     }
   }
 
@@ -1060,8 +1119,10 @@
     function endSeek() {
       if (!st.progressDragging) return
       st.progressDragging = false
-      updateProgressUi()
       persist()
+      // seek 是异步的：这里不立刻读 currentTime（可能还是旧值，会把滑块弹回去），
+      // 交给 'seeked' 事件刷新；再留一个兜底刷新。
+      global.setTimeout(updateProgressUi, 160)
     }
     progressRange.addEventListener('pointerup', endSeek)
     progressRange.addEventListener('pointercancel', endSeek)
