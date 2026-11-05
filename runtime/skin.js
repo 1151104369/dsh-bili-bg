@@ -33,6 +33,16 @@
     queue: str(cfg.queue),
     state: str(cfg.state),
   }
+  ROUTES.auth =
+    isObj(cfg.auth) && (str(cfg.auth.create) || str(cfg.auth.status))
+      ? {
+          create: str(cfg.auth.create),
+          image: str(cfg.auth.image),
+          poll: str(cfg.auth.poll),
+          status: str(cfg.auth.status),
+          logout: str(cfg.auth.logout),
+        }
+      : null
 
   // ────────────────────────────── 小工具 ──────────────────────────────
 
@@ -112,6 +122,10 @@
     busy: false,
     error: '',
     failStreak: 0,
+    loggedIn: false,
+    account: null,
+    authBusy: false,
+    qr: null,
   }
 
   // DOM
@@ -147,6 +161,10 @@
   var progressRange = null
   var progressTime = null
   var lastPlaybackPersist = 0
+  var accountEl = null
+  var srcFeed = null
+  var qrPollTimer = null
+  var qrPollTries = 0
 
   // ────────────────────────────── 界面表面半透明 ──────────────────────────────
 
@@ -627,15 +645,223 @@
     persist()
   }
 
+  // ────────────────────────────── 账号 / 登录 ──────────────────────────────
+  // 只调宿主路由（不直连 B 站）。面板里绝不显示 Cookie，只显示昵称/头像。
+
+  function authRoutes() {
+    return ROUTES.auth
+  }
+
+  /** 拉一次登录态并重绘账号区。 */
+  function refreshAuth() {
+    var ar = authRoutes()
+    if (!ar || !ar.status) return
+    st.authBusy = true
+    renderAccount()
+    fetchJson(ar.status, { cache: 'no-store' }).then(
+      function (data) {
+        st.authBusy = false
+        if (data && data.ok === true) {
+          st.loggedIn = data.loggedIn === true
+          st.account = data.account && typeof data.account === 'object' ? data.account : null
+        }
+        renderAccount()
+      },
+      function () {
+        st.authBusy = false
+        renderAccount()
+      },
+    )
+  }
+
+  /** 点“二维码登录”：向宿主申请新二维码，再开始 2s 轮询。 */
+  function startQrLogin() {
+    var ar = authRoutes()
+    if (!ar || !ar.create || !ar.status) return
+    stopQrLogin()
+    st.qr = { active: true, key: '', img: '', statusText: '正在生成二维码…' }
+    st.authBusy = true
+    renderAccount()
+    fetchJson(ar.create, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(
+      function (data) {
+        st.authBusy = false
+        if (!data || data.ok !== true) {
+          st.qr.active = false
+          st.qr.statusText = (data && data.error) || '生成二维码失败'
+          renderAccount()
+          return
+        }
+        st.qr.key = str(data.key)
+        st.qr.statusText = '等待扫码…'
+        renderAccount()
+        startQrPoll()
+      },
+      function (error) {
+        st.authBusy = false
+        st.qr.active = false
+        st.qr.statusText = '生成二维码失败：' + (error && error.message ? error.message : error)
+        renderAccount()
+      },
+    )
+  }
+
+  function startQrPoll() {
+    stopQrPoll()
+    qrPollTries = 0
+    scheduleQrPoll()
+  }
+  function stopQrPoll() {
+    if (qrPollTimer !== null) {
+      try {
+        global.clearTimeout(qrPollTimer)
+      } catch (e) {
+        /* ignore */
+      }
+      qrPollTimer = null
+    }
+  }
+  function scheduleQrPoll() {
+    if (!st.qr || !st.qr.active) return
+    qrPollTimer = global.setTimeout(function () {
+      qrPollTimer = null
+      pollQrOnce()
+    }, 2000)
+  }
+  function pollQrOnce() {
+    var ar = authRoutes()
+    if (!ar || !ar.poll || !st.qr || !st.qr.active || !st.qr.key) return
+    qrPollTries += 1
+    fetchJson(ar.poll + '?key=' + encodeURIComponent(st.qr.key), { cache: 'no-store' }).then(
+      function (data) {
+        if (!st.qr || !st.qr.active) return
+        if (!data || data.ok !== true) {
+          st.qr.statusText = (data && data.error) || '轮询扫码失败'
+          stopQrPoll()
+          renderAccount()
+          return
+        }
+        if (data.status === 'ok') {
+          stopQrPoll()
+          st.qr.active = false
+          renderAccount()
+          refreshAuth()
+          setStatus('登录成功', 'ok')
+          return
+        }
+        if (data.status === 'expired') {
+          // 失效自动刷新一个新二维码，避免用户手动点。
+          stopQrPoll()
+          st.qr.statusText = '二维码已过期，正在刷新…'
+          renderAccount()
+          global.setTimeout(function () {
+            startQrLogin()
+          }, 400)
+          return
+        }
+        // wait / scanned
+        st.qr.statusText = data.status === 'scanned' ? '已扫码，请在手机上确认' : '等待扫码…'
+        renderAccount()
+        scheduleQrPoll()
+      },
+      function (error) {
+        if (!st.qr || !st.qr.active) return
+        st.qr.statusText = '轮询失败：' + (error && error.message ? error.message : error)
+        stopQrPoll()
+        renderAccount()
+      },
+    )
+  }
+
+  /** 取消扫码（清掉定时器、退回未登录视图）。 */
+  function stopQrLogin() {
+    stopQrPoll()
+    if (st.qr) st.qr.active = false
+    renderAccount()
+  }
+
+  /** 退出登录。 */
+  function doLogout() {
+    var ar = authRoutes()
+    if (!ar || !ar.logout) return
+    st.authBusy = true
+    renderAccount()
+    fetchJson(ar.logout, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(
+      function (data) {
+        st.authBusy = false
+        st.loggedIn = false
+        st.account = null
+        renderAccount()
+        setStatus(data && data.ok === true ? '已退出登录' : '退出登录完成', 'ok')
+      },
+      function () {
+        st.authBusy = false
+        st.loggedIn = false
+        st.account = null
+        renderAccount()
+        setStatus('已退出登录', 'ok')
+      },
+    )
+  }
+
+  /** 重绘账号区：未登录 → 二维码登录按钮；登录 → 头像+昵称+退出；扫码中 → 二维码+状态。 */
+  function renderAccount() {
+    if (accountEl === null) return
+    accountEl.textContent = ''
+    var head = el('div', 'dsbili-rowhead')
+    head.appendChild(el('span', null, '账号'))
+    accountEl.appendChild(head)
+
+    var body = el('div', 'dsbili-account-body')
+    body.id = 'dsbili-account-body'
+
+    if (st.loggedIn && st.account && st.account.uname) {
+      var info = el('div', 'dsbili-account-info')
+      if (st.account.face) {
+        var av = el('img', 'dsbili-account-avatar')
+        av.alt = '头像'
+        av.src = st.account.face
+        info.appendChild(av)
+      }
+      info.appendChild(el('span', 'dsbili-account-name', st.account.uname))
+      body.appendChild(info)
+      var logoutBtn = el('button', 'dsbili-btn dsbili-account-logout', '退出登录')
+      logoutBtn.addEventListener('click', doLogout)
+      body.appendChild(logoutBtn)
+    } else if (st.qr && st.qr.active) {
+      var wrap = el('div', 'dsbili-qr-wrap')
+      var qi = el('img', 'dsbili-qr-img')
+      qi.alt = '扫码登录'
+      qi.src = str(ROUTES.auth.image) + '?key=' + encodeURIComponent(st.qr.key || '')
+      wrap.appendChild(qi)
+      body.appendChild(wrap)
+      body.appendChild(el('div', 'dsbili-qr-status', st.qr.statusText || '…'))
+      var cancelBtn = el('button', 'dsbili-btn', '取消')
+      cancelBtn.addEventListener('click', stopQrLogin)
+      body.appendChild(cancelBtn)
+    } else {
+      var loginBtn = el('button', 'dsbili-btn dsbili-account-login', '二维码登录')
+      loginBtn.addEventListener('click', startQrLogin)
+      body.appendChild(loginBtn)
+      if (st.authBusy) body.appendChild(el('div', 'dsbili-account-status', '检测登录态…'))
+    }
+
+    accountEl.appendChild(body)
+  }
+
   // ────────────────────────────── 队列 ──────────────────────────────
 
   function loadQueue() {
     if (!ROUTES.queue) return Promise.resolve()
-    setStatus('加载' + (st.source === 'ranking' ? '排行榜' : '热门') + '…', '')
+    var label = st.source === 'ranking' ? '排行榜' : st.source === 'feed' ? '首页推荐' : '热门'
+    setStatus('加载' + label + '…', '')
     return fetchJson(ROUTES.queue + '?source=' + st.source + '&count=' + st.count, { cache: 'no-store' }).then(
       function (data) {
         if (!data || data.ok !== true) {
           setStatus((data && data.error) || '队列加载失败', 'error')
+          return
+        }
+        if (data.needAuth === true) {
+          setStatus('首页推荐需先登录（点“账号”→“二维码登录”）', 'error')
           return
         }
         st.queue = Array.isArray(data.list) ? data.list : []
@@ -760,7 +986,7 @@
       function (data) {
         var s = data && data.state
         if (!isObj(s)) return
-        st.source = s.source === 'ranking' ? 'ranking' : st.source
+        st.source = s.source === 'ranking' || s.source === 'feed' ? s.source : st.source
         st.count = num(s.count, st.count, 1, 30)
         st.carousel = s.carousel === true
         st.muted = s.muted === true
@@ -843,6 +1069,7 @@
     if (nextBtn !== null) nextBtn.disabled = st.busy
     if (srcPopular !== null) srcPopular.setAttribute('aria-pressed', st.source === 'popular' ? 'true' : 'false')
     if (srcRanking !== null) srcRanking.setAttribute('aria-pressed', st.source === 'ranking' ? 'true' : 'false')
+    if (srcFeed !== null) srcFeed.setAttribute('aria-pressed', st.source === 'feed' ? 'true' : 'false')
     if (surfaceVal !== null) surfaceVal.textContent = Math.round(st.surface * 100) + '%'
     if (veilVal !== null) veilVal.textContent = Math.round(st.veil * 100) + '%'
     if (volRange !== null) volRange.value = String(Math.round(st.volume * 100))
@@ -1081,6 +1308,12 @@
     now.appendChild(metaEl)
     panel.appendChild(now)
 
+    // 账号区：二维码登录 / 账号信息 / 退出（内容由 renderAccount 动态重绘）。
+    accountEl = el('div', 'dsbili-account')
+    accountEl.id = 'dsbili-account'
+    panel.appendChild(accountEl)
+    renderAccount()
+
     // 进度条（可拖动）
     var progRow = el('div', 'dsbili-row')
     var progHead = el('div', 'dsbili-rowhead')
@@ -1251,8 +1484,22 @@
       loadQueue()
       persist()
     })
+    srcFeed = el('button', 'dsbili-btn', '首页推荐')
+    srcFeed.setAttribute('title', '登录后可用：账号首页推荐（需先扫码登录）')
+    srcFeed.addEventListener('click', function () {
+      if (!st.loggedIn) {
+        setStatus('首页推荐需先登录（点“账号”→“二维码登录”）', 'error')
+        return
+      }
+      st.source = 'feed'
+      st.index = -1
+      syncButtons()
+      loadQueue()
+      persist()
+    })
     row4.appendChild(srcPopular)
     row4.appendChild(srcRanking)
+    row4.appendChild(srcFeed)
     panel.appendChild(row4)
 
     // 音量
@@ -1378,6 +1625,8 @@
       /* 没有键盘事件也无所谓 */
     }
     restoreState()
+    // 拉一次登录态（只显示昵称/头像，绝不回显 Cookie）。
+    refreshAuth()
     // 主题切换时重新套用透明度
     try {
       var observer = new global.MutationObserver(function () {
@@ -1428,6 +1677,12 @@
       clear: toggleClear,
       open: openPanel,
       close: closePanel,
+      auth: {
+        refresh: refreshAuth,
+        startQr: startQrLogin,
+        stopQr: stopQrLogin,
+        logout: doLogout,
+      },
       teardown: function () {
         hideLayer()
         if (layer && layer.parentNode) layer.parentNode.removeChild(layer)

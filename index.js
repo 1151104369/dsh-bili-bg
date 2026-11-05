@@ -23,6 +23,15 @@ import {
   openMediaStream,
   resolveBvid,
 } from './lib/bili.js'
+import {
+  generateQr,
+  pollQr,
+  confirmLogin,
+  getLoginStatus,
+  logout,
+  buildCookieHeader,
+} from './lib/auth.js'
+import { qrPng } from './lib/qr.js'
 import { BOOTSTRAP_GLOBAL, buildInjectionRows } from './lib/injections.js'
 
 export { BOOTSTRAP_GLOBAL, ROUTE_PREFIX }
@@ -40,6 +49,13 @@ const PLAY_ROUTE = `${ROUTE_PREFIX}/play`
 const MEDIA_ROUTE = `${ROUTE_PREFIX}/media`
 const QUEUE_ROUTE = `${ROUTE_PREFIX}/queue`
 const STATE_ROUTE = `${ROUTE_PREFIX}/state`
+const AUTH_QR_ROUTE = `${ROUTE_PREFIX}/auth/qr`
+const AUTH_POLL_ROUTE = `${ROUTE_PREFIX}/auth/poll`
+const AUTH_STATUS_ROUTE = `${ROUTE_PREFIX}/auth/status`
+const AUTH_LOGOUT_ROUTE = `${ROUTE_PREFIX}/auth/logout`
+
+/** 已生成、尚未扫码/未过期的二维码内容（按 qrcode_key 索引，仅内存，随扫码/过期清理）。 */
+const pendingQrs = new Map()
 
 const STATE_FILE = 'dsh-bili-bg.json'
 const STATE_BODY_LIMIT = 64 * 1024
@@ -171,6 +187,13 @@ export function apply(ctx) {
     media: MEDIA_ROUTE,
     queue: QUEUE_ROUTE,
     state: STATE_ROUTE,
+    auth: {
+      create: AUTH_QR_ROUTE,
+      image: AUTH_QR_ROUTE,
+      poll: AUTH_POLL_ROUTE,
+      status: AUTH_STATUS_ROUTE,
+      logout: AUTH_LOGOUT_ROUTE,
+    },
     defaults: {
       source: 'popular',
       count: 12,
@@ -331,7 +354,8 @@ export function apply(ctx) {
             const url = parseUrl(req)
             const source = url.searchParams.get('source') || 'popular'
             const count = url.searchParams.get('count') || '12'
-            fetchQueue(source, count)
+            const cookie = source === 'feed' ? buildCookieHeader(homeDir) : ''
+            fetchQueue(source, count, cookie)
               .then((result) => sendJson(res, 200, { ok: true, ...result }))
               .catch((error) => sendJson(res, 502, { ok: false, error: describe(error) }))
           },
@@ -380,6 +404,105 @@ export function apply(ctx) {
                 sendJson(res, 200, { ok: true, state: merged })
               })
               .catch((error) => sendJson(res, 400, { ok: false, error: describe(error) }))
+          },
+        }),
+      )
+
+      // 二维码登录 / 账号 / 退出。
+      // POST /dsh-bili/auth/qr → 生成新二维码（返回 key 与图片路由）；GET ?key= → 返回 QR PNG。
+      disposers.push(
+        child.webServer.register({
+          kind: 'exact',
+          path: AUTH_QR_ROUTE,
+          handler: async (req, res) => {
+            const method = String(req.method ?? 'GET').toUpperCase()
+            if (method === 'POST') {
+              try {
+                // 顺手清理过期的旧二维码，避免内存无限增长。
+                const now = Date.now()
+                for (const [k, v] of pendingQrs) if (now - v.createdAt > 180000) pendingQrs.delete(k)
+                const qr = await generateQr()
+                pendingQrs.set(qr.key, { url: qr.url, createdAt: Date.now() })
+                sendJson(res, 200, {
+                  ok: true,
+                  key: qr.key,
+                  image: `${AUTH_QR_ROUTE}?key=${encodeURIComponent(qr.key)}`,
+                })
+              } catch (error) {
+                sendJson(res, 502, { ok: false, error: describe(error) })
+              }
+              return
+            }
+            // GET：渲染已生成二维码的 PNG。
+            const url = parseUrl(req)
+            const key = url.searchParams.get('key') || ''
+            const pending = key ? pendingQrs.get(key) : undefined
+            if (!pending || !pending.url) {
+              sendJson(res, 410, { ok: false, error: '二维码不存在或已过期，请重新生成' })
+              return
+            }
+            try {
+              const body = qrPng(pending.url)
+              res.writeHead(200, {
+                'Content-Type': 'image/png',
+                'Content-Length': body.length,
+                'Cache-Control': 'no-store',
+              })
+              res.end(body)
+            } catch (error) {
+              sendJson(res, 500, { ok: false, error: `二维码渲染失败：${describe(error)}` })
+            }
+          },
+        }),
+      )
+
+      // 轮询扫码状态。status: wait(未扫码) | scanned(已扫码待确认) | expired(失效) | ok(成功，已落盘)。
+      disposers.push(
+        child.webServer.register({
+          kind: 'exact',
+          path: AUTH_POLL_ROUTE,
+          handler: async (req, res) => {
+            const url = parseUrl(req)
+            const key = url.searchParams.get('key') || ''
+            if (!key) {
+              sendJson(res, 400, { ok: false, error: '需要 key 参数' })
+              return
+            }
+            try {
+              const result = await pollQr(key)
+              if (result.status === 'ok') {
+                const pending = pendingQrs.get(key)
+                pendingQrs.delete(key)
+                const confirmed = await confirmLogin(homeDir, result.url || (pending && pending.url) || '')
+                sendJson(res, 200, { ok: true, status: 'ok', account: confirmed.account })
+                return
+              }
+              sendJson(res, 200, { ok: true, status: result.status, message: result.message })
+            } catch (error) {
+              sendJson(res, 502, { ok: false, error: describe(error) })
+            }
+          },
+        }),
+      )
+
+      // 登录态（只回传昵称/头像/mid，绝不回显 Cookie）。
+      disposers.push(
+        child.webServer.register({
+          kind: 'exact',
+          path: AUTH_STATUS_ROUTE,
+          handler: (req, res) => {
+            sendJson(res, 200, { ok: true, ...getLoginStatus(homeDir) })
+          },
+        }),
+      )
+
+      // 退出登录：清本地 Cookie 文件。
+      disposers.push(
+        child.webServer.register({
+          kind: 'exact',
+          path: AUTH_LOGOUT_ROUTE,
+          handler: (req, res) => {
+            sendJson(res, 200, { ok: true, ...logout(homeDir), loggedIn: false })
           },
         }),
       )

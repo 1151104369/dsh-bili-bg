@@ -19,7 +19,6 @@ function makeNode(tag) {
     parentNode: null,
     className: '',
     id: '',
-    textContent: '',
     value: '',
     type: '',
     placeholder: '',
@@ -91,6 +90,16 @@ function makeNode(tag) {
       this.paused = true
     },
   }
+  Object.defineProperty(node, 'textContent', {
+    // 模拟真实 DOM：给 textContent 赋值会清掉所有子节点。
+    get() {
+      return Object.prototype.hasOwnProperty.call(this, '_text') ? this._text : ''
+    },
+    set(v) {
+      this._text = String(v === null || v === undefined ? '' : v)
+      this.children = []
+    },
+  })
   return node
 }
 
@@ -109,7 +118,17 @@ const document = {
 function stubFetch(url, opts) {
   const u = String(url)
   let payload = {}
-  if (u.includes('/state')) {
+  if (u.includes('/auth/status')) {
+    payload = { ok: true, ...authState }
+  } else if (u.includes('/auth/logout')) {
+    authState = { loggedIn: false, account: null }
+    payload = { ok: true, loggedIn: false }
+  } else if (u.includes('/auth/qr')) {
+    // 生成二维码（POST /auth/qr）；图片本身通过 <img> 加载，不经过 fetch。
+    payload = { ok: true, key: 'k123', image: '/dsh-bili/auth/qr?key=k123' }
+  } else if (u.includes('/auth/poll')) {
+    payload = { ok: true, status: 'wait', message: '等待扫码' }
+  } else if (u.includes('/state')) {
     if (opts && opts.method === 'POST') payload = { ok: true }
     else payload = { ok: true, state: {} }
   } else if (u.includes('/play')) {
@@ -119,6 +138,7 @@ function stubFetch(url, opts) {
   }
   return Promise.resolve({ json: () => Promise.resolve(payload) })
 }
+let authState = { loggedIn: false, account: null }
 
 const window = {
   document,
@@ -135,6 +155,13 @@ const window = {
     media: '/dsh-bili/media',
     queue: '/dsh-bili/queue',
     state: '/dsh-bili/state',
+    auth: {
+      create: '/dsh-bili/auth/qr',
+      image: '/dsh-bili/auth/qr',
+      poll: '/dsh-bili/auth/poll',
+      status: '/dsh-bili/auth/status',
+      logout: '/dsh-bili/auth/logout',
+    },
     defaults: { source: 'popular', count: 12, volume: 0.8, veil: 0.32, veillight: 0.3 },
   },
 }
@@ -170,9 +197,19 @@ function findById(node, id) {
 
 function findByClass(node, cls) {
   if (!node) return null
-  if (node.className === cls) return node
+  if (String(node.className || '').split(/\s+/).indexOf(cls) !== -1) return node
   for (const c of node.children || []) {
     const hit = findByClass(c, cls)
+    if (hit) return hit
+  }
+  return null
+}
+
+function findByText(node, text) {
+  if (!node) return null
+  if (node.tagName === 'button' && node.textContent === text) return node
+  for (const c of node.children || []) {
+    const hit = findByText(c, text)
     if (hit) return hit
   }
   return null
@@ -210,4 +247,35 @@ api.clear()
 ok('clear mode sets html attr', document.documentElement.getAttribute('data-dsbili-clear') === 'on')
 api.clear()
 ok('clear mode off again', document.documentElement.getAttribute('data-dsbili-clear') === null)
+
+// ── 账号区 / 首页推荐 ──
+const account = findById(document.body, 'dsbili-account')
+ok('account area built', !!account)
+ok('account shows QR login when logged out', !!findByClass(document.body, 'dsbili-account-login'))
+ok('feed source button present', !!findByText(document.body, '首页推荐'))
+
+// 点“二维码登录”→ 显示二维码 + 状态
+if (api.auth && api.auth.startQr) api.auth.startQr()
+await new Promise((r) => setTimeout(r, 60))
+const qrImg = findByClass(document.body, 'dsbili-qr-img')
+ok('qr image shown after login click', !!qrImg && String(qrImg.src).includes('key=k123'))
+ok('qr status text shown', !!findByClass(document.body, 'dsbili-qr-status'))
+if (api.auth && api.auth.stopQr) api.auth.stopQr()
+
+// 登录成功 → 头像 + 昵称 + 退出按钮；未登录按钮隐藏
+authState = { loggedIn: true, account: { uname: '阿B测试', mid: 7, face: 'http://x/face.png' } }
+if (api.auth && api.auth.refresh) api.auth.refresh()
+await new Promise((r) => setTimeout(r, 40))
+const accName = findByClass(document.body, 'dsbili-account-name')
+ok('account shows nickname', !!accName && accName.textContent === '阿B测试')
+const accAvatar = findByClass(document.body, 'dsbili-account-avatar')
+ok('account shows avatar', !!accAvatar && accAvatar.src === 'http://x/face.png')
+ok('account hides login button when logged in', !findByClass(document.body, 'dsbili-account-login'))
+ok('account shows logout button', !!findByClass(document.body, 'dsbili-account-logout'))
+
+// 退出 → 回到未登录视图
+if (api.auth && api.auth.logout) api.auth.logout()
+await new Promise((r) => setTimeout(r, 40))
+ok('after logout shows login button again', !!findByClass(document.body, 'dsbili-account-login'))
+
 console.log(`\n${pass} checks passed`)

@@ -15,6 +15,7 @@ const TMP_HOME = fsx.mkdtempSync(path.join(os.tmpdir(), 'dsh-bili-bg-test-'))
 process.env.DSH_HOME = TMP_HOME
 
 const { apply, VERSION } = await import('../index.js')
+const { qrPng, qrMatrix } = await import('../lib/qr.js')
 
 const routes = new Map()
 const handlers = {}
@@ -131,6 +132,73 @@ const stPost = await (
   })
 ).json()
 ok('state-post', stPost.ok === true && stPost.state.source === 'ranking', stPost.state)
+
+// ① config 应暴露 auth 路由供客户端使用
+ok(
+  'config exposes auth routes',
+  !!(cfg.auth && cfg.auth.create && cfg.auth.image && cfg.auth.poll && cfg.auth.status && cfg.auth.logout),
+  cfg.auth,
+)
+
+// ② 未登录时“首页推荐”应优雅返回 needAuth（不发网络请求，不报错崩）
+const feedOut = await (await fetch(base + '/dsh-bili/queue?source=feed&count=5')).json()
+ok('feed needAuth when logged out', feedOut.ok === true && feedOut.needAuth === true && Array.isArray(feedOut.list), {
+  needAuth: feedOut.needAuth,
+  n: feedOut.list?.length,
+})
+
+// ③ 写入一个“假登录态”文件（离线），验证：能读出登录态、但绝不把 Cookie 回显给页面
+const AUTH_FILE = path.join(TMP_HOME, 'dsh-bili-bg-auth.json')
+fsx.writeFileSync(
+  AUTH_FILE,
+  JSON.stringify({
+    savedAt: new Date().toISOString(),
+    cookie: 'SESSDATA=topsecret-jct; bili_jct=topsecret-jct',
+    nav: { isLogin: true, uname: '测试号', mid: 42, face: '' },
+  }),
+)
+const authIn = await (await fetch(base + '/dsh-bili/auth/status')).json()
+ok('auth-status reads login', authIn.ok === true && authIn.loggedIn === true && authIn.account?.uname === '测试号', authIn)
+ok(
+  'auth-status never exposes cookie',
+  !JSON.stringify(authIn).includes('SESSDATA') && !JSON.stringify(authIn).includes('bili_jct'),
+  authIn,
+)
+
+// ④ 退出登录：清本地文件后应回到未登录
+const logoutRes = await (
+  await fetch(base + '/dsh-bili/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+).json()
+ok('auth logout ok', logoutRes.ok === true && logoutRes.loggedIn === false)
+const authOut = await (await fetch(base + '/dsh-bili/auth/status')).json()
+ok('auth-status after logout is logged out', authOut.ok === true && authOut.loggedIn === false, authOut)
+
+// ⑤ QR 编码器离线单元：有效 PNG + 方阵边长为奇
+const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+const qrImg = qrPng('https://passport.bilibili.com/h5/login?code=abc123&isSnsLogin=0&accountType=1')
+ok('qr png signature', Buffer.compare(qrImg.subarray(0, 8), PNG_SIG) === 0, { len: qrImg.length })
+const qrMat = qrMatrix('hello world qr')
+ok(
+  'qr matrix is square & odd',
+  Array.isArray(qrMat) && qrMat.length > 0 && qrMat.length % 2 === 1 && qrMat.every((r) => Array.isArray(r) && r.length === qrMat.length),
+  { n: qrMat && qrMat.length },
+)
+
+// ⑥ 二维码登录路由（生成 + PNG 渲染）端到端（需要外网，与既有 play/queue 用例同要求）
+const qrGen = await (
+  await fetch(base + '/dsh-bili/auth/qr', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+).json()
+ok('auth-qr generate', qrGen.ok === true && !!qrGen.key && !!qrGen.image, { hasKey: !!qrGen.key })
+if (qrGen.ok && qrGen.key) {
+  const imgRes = await fetch(base + qrGen.image)
+  const imgBuf = Buffer.from(await imgRes.arrayBuffer())
+  ok('auth-qr png route', imgRes.status === 200 && imgRes.headers.get('content-type') === 'image/png', {
+    status: imgRes.status,
+    type: imgRes.headers.get('content-type'),
+    len: imgBuf.length,
+  })
+  ok('auth-qr png signature', Buffer.compare(imgBuf.subarray(0, 8), PNG_SIG) === 0)
+}
 
 // media with Range
 const mediaRes = await fetch(base + '/dsh-bili/media?bvid=BV1GJ411x7h7&cid=137649199', {
