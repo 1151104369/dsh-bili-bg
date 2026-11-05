@@ -1,0 +1,434 @@
+/*
+ * dsh-bili-bg — 注入到 index.html <head> 的样式（结构化注入行 kind:'style'）。
+ *
+ * 只负责三样东西的"样子"：
+ *   ① 全屏背景层（#dsbili-backdrop 内的 <video> + 蒙版）；
+ *   ② 右下角的小圆钮入口（#dsbili-launch）；
+ *   ③ 控制面板（#dsbili-panel）。
+ *
+ * 界面表面的半透明化**不在 CSS 里做**，而是运行时用内联 !important 写 --dsw-alias-*
+ * （见 skin.js 的 applySurface）。原因：video-skin 也在同一批 token 上用了 !important，
+ * 内联 !important 优先级更高，能确保 B 站模式打开时一定是"我们"的透明度，且关掉后
+ * 干净地让回原生/视频皮肤。
+ *
+ * 背景层用 z-index:-1（和 dsh-video-skin 一样）：落在所有在流内容之下，既能透过
+ * 半透明表面被看见，又绝不会挡住任何交互。我们把它 append 到 body 末尾、且同层
+ * 负 z-index 中"后到者在上面"，所以它会盖在装饰性循环背景之上。
+ */
+
+/* ─────────────────────────── ① 全屏背景层 ─────────────────────────── */
+
+#dsbili-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  background: #06080c;
+}
+
+#dsbili-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* 「铺满整个界面」：裁切不留黑边。B 站视频多为 16:9，宽屏下裁切很少。 */
+  object-fit: cover;
+  background: transparent;
+  opacity: 0;
+  transition: opacity 500ms ease;
+}
+
+#dsbili-video[data-shown="1"] {
+  opacity: 1;
+}
+
+#dsbili-veil {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* 蒙版：把画面平均亮度拉向文字色所在的一端，保证聊天文字可读。
+     透明度由 JS 写进 --dsbili-veil（暗） / --dsbili-veil-light（亮）。 */
+  background: rgba(0, 0, 0, var(--dsbili-veil, 0.32));
+}
+
+body:not([data-ds-dark-theme]) #dsbili-veil {
+  background: rgba(255, 255, 255, var(--dsbili-veil-light, 0.3));
+}
+
+/* 专注模式下整层淡出（同时 JS 会把视频 pause 掉）。 */
+#dsbili-backdrop[data-idle="1"] {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 320ms ease;
+}
+
+/* reduced-motion：不播视频，只留蒙版（观感仍成立）。 */
+@media (prefers-reduced-motion: reduce) {
+  #dsbili-video {
+    display: none;
+  }
+}
+
+/* ─────────────────────────── ② 入口胶囊 ───────────────────────────
+ *
+ * 默认放在**顶部工具栏右侧（文件夹按钮左边）**，与窗口标题栏同一水平带。
+ * 两个必须遵守的约束：
+ *   ① **可拖动**：这个位置依赖窗口尺寸/工具栏布局，固定坐标不可能一次猜准，
+ *      所以做成可拖，拖完把 left/top 存进状态文件，下次照原样恢复；
+ *   ② `-webkit-app-region: no-drag`：标题栏是 Electron 的窗口拖动区，
+ *      不显式声明的话点击会被当成"拖窗口"，按钮根本点不动。
+ *
+ * 另外它已经**不再占 dsh-video-skin 圆钮那个位置**（right:16/bottom:16,z900）——
+ * 那正是早先被完全盖住、用户找不到入口的原因。
+ */
+
+#dsbili-launch {
+  position: fixed;
+  top: 44px;
+  right: 150px;
+  z-index: 905;
+  height: 28px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: #dfeaf7;
+  background: rgba(12, 20, 32, 0.62);
+  border: 1px solid rgba(198, 220, 246, 0.34);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  cursor: grab;
+  opacity: 0.82;
+  transition: opacity 220ms ease, transform 220ms ease, background 220ms ease;
+  -webkit-app-region: no-drag;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+  font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+#dsbili-launch[data-dragging="1"] {
+  cursor: grabbing;
+  opacity: 1;
+  background: rgba(18, 30, 48, 0.9);
+}
+
+#dsbili-launch:hover,
+#dsbili-launch:focus-visible,
+#dsbili-launch[data-active="1"] {
+  opacity: 1;
+  background: rgba(18, 30, 48, 0.84);
+  transform: scale(1.06);
+}
+
+body:not([data-ds-dark-theme]) #dsbili-launch {
+  color: #2a3442;
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(20, 30, 45, 0.18);
+}
+
+/* ─────────────────────────── ③ 控制面板 ─────────────────────────── */
+
+#dsbili-panel {
+  position: fixed;
+  right: 16px;
+  top: 80px;
+  z-index: 906;
+  width: 300px;
+  max-height: min(82vh, 700px);
+  overflow-y: auto;
+  display: none;
+  flex-direction: column;
+  gap: 11px;
+  box-sizing: border-box;
+  padding: 14px 16px 12px;
+  border-radius: 14px;
+  font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 12.5px;
+  color: #e6eef8;
+  background: rgba(14, 20, 30, 0.93);
+  border: 1px solid rgba(198, 220, 246, 0.22);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#dsbili-panel[data-open="1"] {
+  display: flex;
+}
+
+body:not([data-ds-dark-theme]) #dsbili-panel {
+  color: #1e2734;
+  background: rgba(252, 253, 255, 0.97);
+  border-color: rgba(20, 30, 45, 0.14);
+  box-shadow: 0 18px 48px rgba(20, 32, 48, 0.22);
+}
+
+.dsbili-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dsbili-title {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.dsbili-close {
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.dsbili-close:hover {
+  opacity: 1;
+}
+
+/* 输入框行 */
+.dsbili-inputrow {
+  display: flex;
+  gap: 6px;
+}
+
+.dsbili-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  outline: none;
+}
+
+.dsbili-input::placeholder {
+  color: currentColor;
+  opacity: 0.5;
+}
+
+.dsbili-input:focus {
+  border-color: rgba(140, 200, 255, 0.6);
+}
+
+body:not([data-ds-dark-theme]) .dsbili-input {
+  background: rgba(20, 30, 45, 0.05);
+  border-color: rgba(20, 30, 45, 0.14);
+}
+
+/* 按钮 */
+.dsbili-btn {
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  white-space: nowrap;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  transition: background 150ms ease, border-color 150ms ease;
+  font-family: inherit;
+}
+
+.dsbili-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.dsbili-btn[aria-pressed="true"],
+.dsbili-btn[data-on="1"] {
+  background: rgba(90, 160, 230, 0.32);
+  border-color: rgba(140, 200, 255, 0.62);
+  color: #dbeafe;
+}
+
+body:not([data-ds-dark-theme]) .dsbili-btn {
+  background: rgba(20, 30, 45, 0.05);
+  border-color: rgba(20, 30, 45, 0.12);
+}
+
+body:not([data-ds-dark-theme]) .dsbili-btn[aria-pressed="true"],
+body:not([data-ds-dark-theme]) .dsbili-btn[data-on="1"] {
+  background: rgba(27, 79, 138, 0.14);
+  border-color: rgba(27, 79, 138, 0.42);
+  color: #1b4f8a;
+}
+
+.dsbili-btn[disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.dsbili-btnrow {
+  display: flex;
+  gap: 6px;
+}
+
+.dsbili-btnrow > .dsbili-btn {
+  flex: 1;
+  text-align: center;
+}
+
+/* 当前标题 */
+.dsbili-now {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+body:not([data-ds-dark-theme]) .dsbili-now {
+  background: rgba(20, 30, 45, 0.04);
+  border-color: rgba(20, 30, 45, 0.08);
+}
+
+.dsbili-now-title {
+  font-weight: 600;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsbili-now-meta {
+  font-size: 11px;
+  opacity: 0.66;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 滑块行 */
+.dsbili-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dsbili-rowhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  opacity: 0.9;
+}
+
+.dsbili-valued {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+.dsbili-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 3px;
+  margin: 4px 0 0;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.2);
+  outline: none;
+  cursor: pointer;
+}
+
+body:not([data-ds-dark-theme]) .dsbili-range {
+  background: rgba(20, 30, 45, 0.16);
+}
+
+.dsbili-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #7fc0ff;
+  border: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+
+/* 状态行 */
+.dsbili-status {
+  font-size: 11px;
+  line-height: 1.5;
+  opacity: 0.72;
+  min-height: 16px;
+  word-break: break-all;
+}
+
+.dsbili-status[data-level="error"] {
+  color: #ffb4a8;
+  opacity: 1;
+}
+
+.dsbili-status[data-level="ok"] {
+  color: #8ce0a8;
+  opacity: 1;
+}
+
+/* 列表 */
+.dsbili-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.dsbili-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 11.5px;
+}
+
+.dsbili-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dsbili-item[data-active="1"] {
+  background: rgba(90, 160, 230, 0.22);
+}
+
+body:not([data-ds-dark-theme]) .dsbili-item:hover {
+  background: rgba(20, 30, 45, 0.06);
+}
+
+.dsbili-item-index {
+  flex: 0 0 auto;
+  width: 18px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
+
+.dsbili-item-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsbili-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  opacity: 0.6;
+}

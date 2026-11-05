@@ -1,0 +1,12 @@
+# dsh-bili-bg 的 bundle patch 层。
+#
+# package.json 的 `dsh.bundle.patch` 指向这个文件：DSH 的 loader 会把它插进 profile
+# 的组合树（在 bundle 层之后、用户自己的 cordis.patch.yml 之前）。
+#
+# 语法要点：
+#   - 顶层是 YAML 数组；`insert` 追加行。
+#   - `name` 必须与安装的包名一致（@local/dsh-bili-bg），否则 loader 只 warn 跳过。
+#   - 可调项走运行期配置（$DSH_HOME/dsh-bili-bg.json 或 query 参数），这里不写 config。
+- insert:
+    - id: dsh-bili-bg
+      name: '@local/dsh-bili-bg'
