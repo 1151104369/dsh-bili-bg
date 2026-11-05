@@ -5,8 +5,16 @@
  * 运行：node tests/smoke.mjs
  */
 import http from 'node:http'
+import os from 'node:os'
+import path from 'node:path'
+import fsx from 'node:fs'
 import assert from 'node:assert/strict'
-import { apply, VERSION } from '../index.js'
+
+// 用临时 DSH_HOME，避免冒烟测试覆盖用户真实的 dsh-bili-bg.json 状态。
+const TMP_HOME = fsx.mkdtempSync(path.join(os.tmpdir(), 'dsh-bili-bg-test-'))
+process.env.DSH_HOME = TMP_HOME
+
+const { apply, VERSION } = await import('../index.js')
 
 const routes = new Map()
 const handlers = {}
@@ -137,3 +145,8 @@ try {
 
 console.log(`\n${pass} checks passed`)
 server.close()
+try {
+  fsx.rmSync(TMP_HOME, { recursive: true, force: true })
+} catch {
+  /* ignore */
+}

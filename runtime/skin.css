@@ -29,14 +29,25 @@
 
 #dsbili-video {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
   width: 100%;
-  height: 100%;
-  /* 「铺满整个界面」：裁切不留黑边。B 站视频多为 16:9，宽屏下裁切很少。 */
-  object-fit: cover;
+  height: auto;
+  max-height: 100%;
+  /* 默认「按宽度完整显示、靠顶部」：**不裁切**，画面下方留空（背景层的深色底）。
+     对比 dsh-video-skin 的 object-fit:cover 会裁掉左右/上下，这里保留完整画面。 */
+  object-fit: contain;
+  object-position: center top;
   background: transparent;
   opacity: 0;
   transition: opacity 500ms ease;
+}
+
+/* 面板里可切到「铺满」：填满整个视口、允许裁切（和 video-skin 一样的观感）。 */
+#dsbili-video[data-fit="cover"] {
+  height: 100%;
+  object-fit: cover;
+  object-position: center center;
 }
 
 #dsbili-video[data-shown="1"] {

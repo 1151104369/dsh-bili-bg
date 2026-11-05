@@ -93,6 +93,7 @@
     veil: num(d.veil, 0.3, 0, 0.92),
     veilLight: num(d.veillight, 0.3, 0, 0.92),
     surface: 0.5,
+    fit: 'width',
     launcher: null,
     queue: [],
     index: -1,
@@ -126,51 +127,78 @@
   var veilVal = null
   var srcPopular = null
   var srcRanking = null
+  var fitBtn = null
 
   // ────────────────────────────── 界面表面半透明 ──────────────────────────────
 
   /**
-   * 开关界面表面的半透明（写内联 !important，压过主题与 video-skin 的样式表规则）。
+   * 开关界面表面的半透明（写内联 !important）。
+   *
+   * **必须写到 <body>，不能只写 <html>。** 内核主题（dsh-client-ui-theme）把整套
+   * 别名色 `--dsw-alias-*` 定义在 `body` / `body[data-ds-dark-theme]` 上；自定义属性
+   * 有"就近定义"语义——body 自己声明了值，就不会继承 html 上的。所以只往 html 写
+   * 内联变量是**无效的**：视频会被 body 的不透明底色盖住。
+   *
+   * 早先我们只写 html，于是必须靠 dsh-video-skin 用 `html[data-dsvs] body{--dsw-...}`
+   * 帮忙把 body 的值改透明才看得见——禁用 video-skin 就黑屏没画面，正是这个原因。
+   * 现在 html 和 body 都写内联 !important（内联 !important 高于任何样式表 !important），
+   * 因此 **完全不依赖 dsh-video-skin**；两者同时开启时以我们的值为准。
+   *
    * @param {boolean} on 是否开启
    */
   function applySurface(on) {
-    var root = doc.documentElement
-    if (!root || !root.style) return
+    var html = doc.documentElement
+    var body = doc.body
+    var targets = []
+    if (html && html.style) targets.push(html)
+    if (body && body.style) targets.push(body)
+    if (targets.length === 0) return
     var setVar = function (name, value) {
-      try {
-        if (value === null) root.style.removeProperty(name)
-        else root.style.setProperty(name, value, 'important')
-      } catch (e) {
-        /* ignore */
+      for (var i = 0; i < targets.length; i += 1) {
+        try {
+          if (value === null) targets[i].style.removeProperty(name)
+          else targets[i].style.setProperty(name, value, 'important')
+        } catch (e) {
+          /* ignore */
+        }
       }
     }
     if (!on) {
       setVar('--dsw-alias-bg-base', null)
       setVar('--dsw-specific-sidebar-fill', null)
       try {
-        if (doc.body && doc.body.style) doc.body.style.removeProperty('background-color')
+        if (body && body.style) body.style.removeProperty('background-color')
       } catch (e) {
         /* ignore */
       }
-      root.removeAttribute('data-dsbili')
+      if (html) html.removeAttribute('data-dsbili')
       return
     }
     var base = clamp01(st.surface)
     var side = clamp01(base + 0.06)
+    var baseValue
+    var sideValue
     if (isDark()) {
-      setVar('--dsw-alias-bg-base', 'rgba(21,21,23,' + base + ')')
-      setVar('--dsw-specific-sidebar-fill', 'rgba(27,27,28,' + side + ')')
+      baseValue = 'rgba(21,21,23,' + base + ')'
+      sideValue = 'rgba(27,27,28,' + side + ')'
     } else {
       var light = clamp01(base + 0.4)
-      setVar('--dsw-alias-bg-base', 'rgba(255,255,255,' + light + ')')
-      setVar('--dsw-specific-sidebar-fill', 'rgba(249,250,251,' + clamp01(light + 0.06) + ')')
+      baseValue = 'rgba(255,255,255,' + light + ')'
+      sideValue = 'rgba(249,250,251,' + clamp01(light + 0.06) + ')'
     }
+    setVar('--dsw-alias-bg-base', baseValue)
+    setVar('--dsw-specific-sidebar-fill', sideValue)
     try {
-      if (doc.body && doc.body.style) doc.body.style.setProperty('background-color', 'transparent', 'important')
+      if (body && body.style) body.style.setProperty('background-color', 'transparent', 'important')
     } catch (e) {
       /* ignore */
     }
-    root.setAttribute('data-dsbili', 'on')
+    if (html) html.setAttribute('data-dsbili', 'on')
+  }
+
+  /** 把"完整/铺满"写进视频元素的 data-fit。 */
+  function applyFit() {
+    if (video !== null) video.setAttribute('data-fit', st.fit === 'cover' ? 'cover' : 'width')
   }
 
   /** 把蒙版透明度写到 CSS 变量（亮/暗各一份）。 */
@@ -204,6 +232,7 @@
     video.setAttribute('playsinline', '')
     video.setAttribute('muted', '')
     video.setAttribute('aria-hidden', 'true')
+    video.setAttribute('data-fit', st.fit === 'cover' ? 'cover' : 'width')
 
     veilEl = el('div')
     veilEl.id = 'dsbili-veil'
@@ -332,6 +361,7 @@
             video.removeAttribute('data-shown')
             video.src = data.src
             video.loop = !st.carousel
+            video.setAttribute('data-fit', st.fit === 'cover' ? 'cover' : 'width')
             tryPlay(!st.muted)
           }
           updateNow()
@@ -522,6 +552,7 @@
         surface: st.surface,
         veil: st.veil,
         veilLight: st.veilLight,
+        fit: st.fit,
         launcher: st.launcher || null,
         bvid: st.current && st.current.bvid ? st.current.bvid : '',
         title: st.current && st.current.title ? st.current.title : '',
@@ -552,6 +583,7 @@
         st.veil = num(s.veil, st.veil, 0, 0.92)
         st.veilLight = num(s.veilLight, st.veilLight, 0, 0.92)
         st.surface = num(s.surface, st.surface, 0, 1)
+        if (s.fit === 'cover' || s.fit === 'width') st.fit = s.fit
         if (s.launcher) applyLauncherPos(s.launcher)
         if (s.bvid && inputEl) inputEl.value = s.bvid
         syncControls()
@@ -598,6 +630,7 @@
       muteBtn.textContent = st.muted ? '🔇 已静音' : '🔊 有声'
       muteBtn.setAttribute('aria-pressed', st.muted ? 'false' : 'true')
     }
+    if (fitBtn !== null) fitBtn.textContent = st.fit === 'cover' ? '显示: 铺满' : '显示: 完整'
     if (carouselBtn !== null) carouselBtn.setAttribute('aria-pressed', st.carousel ? 'true' : 'false')
     if (focusBtn !== null) {
       focusBtn.textContent = st.focusOff ? '☀ 恢复显示' : '🌙 专注隐藏'
@@ -801,6 +834,18 @@
     row2.appendChild(muteBtn)
     row2.appendChild(focusBtn)
     panel.appendChild(row2)
+
+    // 显示方式：完整（按宽度靠顶、不裁切）/ 铺满（填满、可裁切）
+    var rowFit = el('div', 'dsbili-btnrow')
+    fitBtn = el('button', 'dsbili-btn', '显示: 完整')
+    fitBtn.addEventListener('click', function () {
+      st.fit = st.fit === 'cover' ? 'width' : 'cover'
+      applyFit()
+      syncButtons()
+      persist()
+    })
+    rowFit.appendChild(fitBtn)
+    panel.appendChild(rowFit)
 
     // 轮播/来源
     var row3 = el('div', 'dsbili-btnrow')

@@ -182,4 +182,10 @@ function ok(name, cond) {
 ok('panel built', !!panel)
 ok('launch built', !!launch)
 ok('video created', !!video && video.src.includes('/dsh-bili/media'))
+
+// 关键回归：透明变量必须写到 <body>（主题把 --dsw-alias-* 定义在 body 上），
+// 否则禁用 dsh-video-skin 后视频会被不透明底色盖住。
+const bodyVars = document.body && document.body.style && document.body.style._p ? document.body.style._p : {}
+ok('body got --dsw-alias-bg-base', bodyVars['--dsw-alias-bg-base'] !== undefined)
+ok('video fit=width by default', video.getAttribute('data-fit') === 'width')
 console.log(`\n${pass} checks passed`)
