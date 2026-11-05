@@ -27,6 +27,17 @@
   background: #06080c;
 }
 
+/* ─────────────────────────── 清屏模式 ───────────────────────────
+ *
+ * 只隐藏**中间会话内容区**，保留左侧会话/任务列表（可继续看状态、点进会话）。
+ * 选择器用 `[class*="centerCol"]`：dsh-client-ui-layout 的列容器是
+ * `mP3x-q_centerCol` / `mP3x-q_sidebarCol`，前缀里的 hash 是构建期生成的，
+ * 但语义名 centerCol/sidebarCol 稳定，用属性子串匹配不受 hash 变化影响。
+ */
+html[data-dsbili-clear="on"] [class*="centerCol"] {
+  display: none !important;
+}
+
 /* 「完整显示」时视频只占顶部一条，下方留空。留空区有两种处理：
    - 默认（data-bg="blank"）：纯黑底，专注、不被别的东西干扰；
    - data-bg="preserve"：背景层透明，露出它下面 dsh-video-skin 的装饰背景
@@ -175,6 +186,12 @@ body:not([data-ds-dark-theme]) #dsbili-veil {
 
 .dsbili-mini-btn:hover {
   background: rgba(255, 255, 255, 0.22);
+}
+
+.dsbili-mini-btn[data-on="1"] {
+  background: rgba(90, 160, 230, 0.42);
+  border-color: rgba(140, 200, 255, 0.62);
+  color: #dbeafe;
 }
 
 body:not([data-ds-dark-theme]) .dsbili-mini-btn {

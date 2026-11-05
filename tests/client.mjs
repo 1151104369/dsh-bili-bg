@@ -199,7 +199,13 @@ const bodyVars = document.body && document.body.style && document.body.style._p 
 ok('body got --dsw-alias-bg-base', bodyVars['--dsw-alias-bg-base'] !== undefined)
 ok('video fit=width by default', video.getAttribute('data-fit') === 'width')
 const mini = findByClass(document.body, 'dsbili-mini')
-ok('floating pill has expandable mini bar (3 buttons)', !!mini && (mini.children || []).length === 3)
+ok('floating pill has expandable mini bar (4 buttons)', !!mini && (mini.children || []).length === 4)
 const backdrop = findById(document.body, 'dsbili-backdrop')
 ok('preserve-bg mode default', !!backdrop && backdrop.getAttribute('data-bg') === 'preserve')
+
+// 清屏模式：给 html 挂属性，CSS 只隐藏 centerCol
+api.clear()
+ok('clear mode sets html attr', document.documentElement.getAttribute('data-dsbili-clear') === 'on')
+api.clear()
+ok('clear mode off again', document.documentElement.getAttribute('data-dsbili-clear') === null)
 console.log(`\n${pass} checks passed`)

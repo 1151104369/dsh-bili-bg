@@ -97,6 +97,7 @@
     preserveBg: true,
     rate: 1,
     expanded: false,
+    clear: false,
     launcher: null,
     queue: [],
     index: -1,
@@ -133,6 +134,7 @@
   var fitBtn = null
   var bgBtn = null
   var miniPlayBtn = null
+  var clearBtn = null
   var rateVal = null
   var rateButtons = []
 
@@ -673,6 +675,7 @@
     if (fitBtn !== null) fitBtn.textContent = st.fit === 'cover' ? '显示: 铺满' : '显示: 完整'
     if (bgBtn !== null) bgBtn.textContent = st.preserveBg ? '背景: 保留' : '背景: 留空'
     if (miniPlayBtn !== null) miniPlayBtn.textContent = st.playing ? '⏸' : '▶'
+    if (clearBtn !== null) clearBtn.setAttribute('data-on', st.clear ? '1' : '0')
     if (rateVal !== null) rateVal.textContent = String(st.rate) + 'x'
     for (var rbi = 0; rbi < rateButtons.length; rbi += 1) {
       var rb = rateButtons[rbi]
@@ -763,6 +766,20 @@
     syncButtons()
   }
 
+  /** 清屏：只藏中间内容区，左侧会话/任务列表保持可点。 */
+  function applyClear() {
+    var html = doc.documentElement
+    if (!html) return
+    if (st.clear) html.setAttribute('data-dsbili-clear', 'on')
+    else html.removeAttribute('data-dsbili-clear')
+  }
+
+  function toggleClear() {
+    st.clear = !st.clear
+    applyClear()
+    syncButtons()
+  }
+
   /** 设置播放倍速。 */
   function setRate(rate) {
     var value = num(rate, 1, 0.25, 4)
@@ -810,8 +827,15 @@
       if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
       openPanel()
     })
+    clearBtn = el('button', 'dsbili-mini-btn', '清')
+    clearBtn.setAttribute('title', '清屏 / 恢复内容（只藏中间，左侧列表保留）')
+    clearBtn.addEventListener('click', function (ev) {
+      if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
+      toggleClear()
+    })
     mini.appendChild(miniPlayBtn)
     mini.appendChild(miniNext)
+    mini.appendChild(clearBtn)
     mini.appendChild(miniGear)
     launch.appendChild(mini)
 
@@ -1163,12 +1187,31 @@
     } catch (e) {
       /* ignore */
     }
+    // 清屏期间点击左侧列表 → 先恢复内容再让点击生效，直接切到对应会话。
+    try {
+      doc.addEventListener(
+        'click',
+        function (event) {
+          if (!st.clear) return
+          var target = event && event.target
+          if (target && typeof target.closest === 'function' && target.closest('[class*="sidebarCol"]')) {
+            st.clear = false
+            applyClear()
+            syncButtons()
+          }
+        },
+        true,
+      )
+    } catch (e) {
+      /* ignore */
+    }
     global.__DSH_BILI_BG_API__ = {
       state: st,
       play: loadAndPlay,
       loadQueue: loadQueue,
       next: next,
       prev: prev,
+      clear: toggleClear,
       open: openPanel,
       close: closePanel,
       teardown: function () {
