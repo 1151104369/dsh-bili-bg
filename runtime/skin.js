@@ -94,6 +94,8 @@
     veilLight: num(d.veillight, 0.3, 0, 0.92),
     surface: 0.5,
     fit: 'width',
+    rate: 1,
+    expanded: false,
     launcher: null,
     queue: [],
     index: -1,
@@ -128,6 +130,9 @@
   var srcPopular = null
   var srcRanking = null
   var fitBtn = null
+  var miniPlayBtn = null
+  var rateVal = null
+  var rateButtons = []
 
   // ────────────────────────────── 界面表面半透明 ──────────────────────────────
 
@@ -362,6 +367,11 @@
             video.src = data.src
             video.loop = !st.carousel
             video.setAttribute('data-fit', st.fit === 'cover' ? 'cover' : 'width')
+            try {
+              video.playbackRate = st.rate
+            } catch (e) {
+              /* ignore */
+            }
             tryPlay(!st.muted)
           }
           updateNow()
@@ -553,6 +563,7 @@
         veil: st.veil,
         veilLight: st.veilLight,
         fit: st.fit,
+        rate: st.rate,
         launcher: st.launcher || null,
         bvid: st.current && st.current.bvid ? st.current.bvid : '',
         title: st.current && st.current.title ? st.current.title : '',
@@ -584,6 +595,7 @@
         st.veilLight = num(s.veilLight, st.veilLight, 0, 0.92)
         st.surface = num(s.surface, st.surface, 0, 1)
         if (s.fit === 'cover' || s.fit === 'width') st.fit = s.fit
+        st.rate = num(s.rate, st.rate, 0.25, 4)
         if (s.launcher) applyLauncherPos(s.launcher)
         if (s.bvid && inputEl) inputEl.value = s.bvid
         syncControls()
@@ -631,6 +643,12 @@
       muteBtn.setAttribute('aria-pressed', st.muted ? 'false' : 'true')
     }
     if (fitBtn !== null) fitBtn.textContent = st.fit === 'cover' ? '显示: 铺满' : '显示: 完整'
+    if (miniPlayBtn !== null) miniPlayBtn.textContent = st.playing ? '⏸' : '▶'
+    if (rateVal !== null) rateVal.textContent = String(st.rate) + 'x'
+    for (var rbi = 0; rbi < rateButtons.length; rbi += 1) {
+      var rb = rateButtons[rbi]
+      rb.setAttribute('data-on', Number(rb.getAttribute('data-rate')) === st.rate ? '1' : '0')
+    }
     if (carouselBtn !== null) carouselBtn.setAttribute('aria-pressed', st.carousel ? 'true' : 'false')
     if (focusBtn !== null) {
       focusBtn.textContent = st.focusOff ? '☀ 恢复显示' : '🌙 专注隐藏'
@@ -706,19 +724,76 @@
     else openPanel()
   }
 
+  /** 展开/收回悬浮胶囊里的快捷按钮。 */
+  function setExpanded(expanded) {
+    st.expanded = expanded === true
+    if (launch !== null) {
+      launch.setAttribute('data-expanded', st.expanded ? '1' : '0')
+      launch.setAttribute('aria-expanded', st.expanded ? 'true' : 'false')
+    }
+    syncButtons()
+  }
+
+  /** 设置播放倍速。 */
+  function setRate(rate) {
+    var value = num(rate, 1, 0.25, 4)
+    st.rate = value
+    if (video !== null) {
+      try {
+        video.playbackRate = value
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    syncButtons()
+    persist()
+  }
+
   function buildUI() {
     if (!doc.body) return false
 
-    // 入口圆钮
+    // 入口胶囊：可拖动；点击展开/收回「播放/暂停」「下一支」「设置」快捷按钮。
     launch = el('div')
     launch.id = 'dsbili-launch'
     launch.setAttribute('role', 'button')
     launch.setAttribute('tabindex', '0')
-    launch.setAttribute('title', 'B 站背景（可拖动；Ctrl+Shift+B）')
-    launch.textContent = '📺 B站'
-    // 可拖动 + 点击打开：拖动是必要的，入口位置依赖窗口/工具栏布局，固定坐标猜不准。
+    launch.setAttribute('aria-expanded', 'false')
+    launch.setAttribute('title', 'B 站背景：点击展开/收回快捷按钮；可拖动；Ctrl+Shift+B 打开面板')
+
+    launch.appendChild(el('span', 'dsbili-launch-label', '📺 B站'))
+
+    var mini = el('div', 'dsbili-mini')
+    miniPlayBtn = el('button', 'dsbili-mini-btn', '▶')
+    miniPlayBtn.setAttribute('title', '播放 / 暂停')
+    miniPlayBtn.addEventListener('click', function (ev) {
+      if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
+      togglePlay()
+    })
+    var miniNext = el('button', 'dsbili-mini-btn', '⏭')
+    miniNext.setAttribute('title', '下一支')
+    miniNext.addEventListener('click', function (ev) {
+      if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
+      next()
+    })
+    var miniGear = el('button', 'dsbili-mini-btn', '⚙')
+    miniGear.setAttribute('title', '打开设置面板')
+    miniGear.addEventListener('click', function (ev) {
+      if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
+      openPanel()
+    })
+    mini.appendChild(miniPlayBtn)
+    mini.appendChild(miniNext)
+    mini.appendChild(miniGear)
+    launch.appendChild(mini)
+
+    function isMiniTarget(target) {
+      return !!(target && typeof target.closest === 'function' && target.closest('.dsbili-mini'))
+    }
+
+    // 可拖动 + 点击展开/收回：拖动是必要的，入口位置依赖窗口/工具栏布局，固定坐标猜不准。
     var drag = null
     launch.addEventListener('pointerdown', function (ev) {
+      if (isMiniTarget(ev && ev.target)) return
       if (ev && typeof ev.button === 'number' && ev.button !== 0) return
       var rect = typeof launch.getBoundingClientRect === 'function' ? launch.getBoundingClientRect() : { left: 0, top: 0 }
       drag = { sx: ev ? ev.clientX : 0, sy: ev ? ev.clientY : 0, ox: rect.left, oy: rect.top, moved: false }
@@ -754,7 +829,7 @@
         /* ignore */
       }
       if (moved) rememberLauncherPos()
-      else togglePanel()
+      else setExpanded(!st.expanded)
     })
     launch.addEventListener('pointercancel', function () {
       drag = null
@@ -846,6 +921,30 @@
     })
     rowFit.appendChild(fitBtn)
     panel.appendChild(rowFit)
+
+    // 倍速
+    var rateRow = el('div', 'dsbili-row')
+    var rateHead = el('div', 'dsbili-rowhead')
+    rateHead.appendChild(el('span', null, '倍速'))
+    rateVal = el('span', 'dsbili-valued', String(st.rate) + 'x')
+    rateHead.appendChild(rateVal)
+    var rateBtns = el('div', 'dsbili-btnrow')
+    var rateOptions = [0.5, 0.75, 1, 1.25, 1.5, 2]
+    rateButtons = []
+    for (var ri = 0; ri < rateOptions.length; ri += 1) {
+      ;(function (rate) {
+        var rateBtn = el('button', 'dsbili-btn dsbili-rate-btn', String(rate) + 'x')
+        rateBtn.setAttribute('data-rate', String(rate))
+        rateBtn.addEventListener('click', function () {
+          setRate(rate)
+        })
+        rateBtns.appendChild(rateBtn)
+        rateButtons.push(rateBtn)
+      })(rateOptions[ri])
+    }
+    rateRow.appendChild(rateHead)
+    rateRow.appendChild(rateBtns)
+    panel.appendChild(rateRow)
 
     // 轮播/来源
     var row3 = el('div', 'dsbili-btnrow')

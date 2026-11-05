@@ -130,6 +130,57 @@ body:not([data-ds-dark-theme]) #dsbili-veil {
   background: rgba(18, 30, 48, 0.9);
 }
 
+/* 可展开的快捷按钮：点击胶囊展开「播放/暂停」「下一支」「设置」，再点收起。 */
+.dsbili-launch-label {
+  white-space: nowrap;
+  pointer-events: none; /* 点击统一交给外层胶囊处理 */
+}
+
+.dsbili-mini {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  margin-left: 2px;
+}
+
+#dsbili-launch[data-expanded="1"] .dsbili-mini {
+  display: flex;
+}
+
+.dsbili-mini-btn {
+  -webkit-app-region: no-drag;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid rgba(198, 220, 246, 0.28);
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.dsbili-mini-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+body:not([data-ds-dark-theme]) .dsbili-mini-btn {
+  border-color: rgba(20, 30, 45, 0.16);
+  background: rgba(20, 30, 45, 0.06);
+}
+
+/* 倍速按钮：一排放六个，字号小一点才挤得下。 */
+.dsbili-rate-btn {
+  padding: 5px 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 #dsbili-launch:hover,
 #dsbili-launch:focus-visible,
 #dsbili-launch[data-active="1"] {

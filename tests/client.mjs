@@ -168,6 +168,16 @@ function findById(node, id) {
   return null
 }
 
+function findByClass(node, cls) {
+  if (!node) return null
+  if (node.className === cls) return node
+  for (const c of node.children || []) {
+    const hit = findByClass(c, cls)
+    if (hit) return hit
+  }
+  return null
+}
+
 let pass = 0
 function ok(name, cond) {
   if (cond) {
@@ -188,4 +198,6 @@ ok('video created', !!video && video.src.includes('/dsh-bili/media'))
 const bodyVars = document.body && document.body.style && document.body.style._p ? document.body.style._p : {}
 ok('body got --dsw-alias-bg-base', bodyVars['--dsw-alias-bg-base'] !== undefined)
 ok('video fit=width by default', video.getAttribute('data-fit') === 'width')
+const mini = findByClass(document.body, 'dsbili-mini')
+ok('floating pill has expandable mini bar (3 buttons)', !!mini && (mini.children || []).length === 3)
 console.log(`\n${pass} checks passed`)
