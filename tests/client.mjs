@@ -202,6 +202,8 @@ const mini = findByClass(document.body, 'dsbili-mini')
 ok('floating pill has expandable mini bar (4 buttons)', !!mini && (mini.children || []).length === 4)
 const backdrop = findById(document.body, 'dsbili-backdrop')
 ok('preserve-bg mode default', !!backdrop && backdrop.getAttribute('data-bg') === 'preserve')
+const progress = findById(document.body, 'dsbili-progress')
+ok('seekable progress bar built', !!progress && progress.type === 'range')
 
 // 清屏模式：给 html 挂属性，CSS 只隐藏 centerCol
 api.clear()

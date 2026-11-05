@@ -98,6 +98,9 @@
     rate: 1,
     expanded: false,
     clear: false,
+    progressDragging: false,
+    pendingSeek: null,
+    resume: true,
     launcher: null,
     queue: [],
     index: -1,
@@ -137,6 +140,9 @@
   var clearBtn = null
   var rateVal = null
   var rateButtons = []
+  var progressRange = null
+  var progressTime = null
+  var lastPlaybackPersist = 0
 
   // ────────────────────────────── 界面表面半透明 ──────────────────────────────
 
@@ -281,7 +287,63 @@
       if (video.error) onVideoError('播放源出错（' + video.error.code + '）')
     })
     video.addEventListener('ended', onEnded)
+    video.addEventListener('loadedmetadata', onLoadedMetadata)
+    video.addEventListener('timeupdate', onTimeUpdate)
+    video.addEventListener('pause', function () {
+      persist()
+    })
     return layer
+  }
+
+  /** 元数据就绪：刷新进度条上限，并应用"续播"暂存的跳转位置。 */
+  function onLoadedMetadata() {
+    updateProgressUi()
+    if (st.pendingSeek !== null && video !== null) {
+      var seekTo = st.pendingSeek
+      st.pendingSeek = null
+      try {
+        var dur = isFinite(video.duration) ? video.duration : seekTo
+        video.currentTime = Math.max(0, Math.min(seekTo, dur))
+      } catch (e) {
+        /* ignore */
+      }
+    }
+  }
+
+  /** 播放中：更新进度条；每 5 秒落一次进度，保证重启能接着播。 */
+  function onTimeUpdate() {
+    if (st.progressDragging) return
+    updateProgressUi()
+    var now = Date.now()
+    if (now - lastPlaybackPersist > 5000) {
+      lastPlaybackPersist = now
+      persist()
+    }
+  }
+
+  /** 把当前进度/时长写到进度条与时间文字。 */
+  function updateProgressUi() {
+    if (video === null) return
+    var dur = 0
+    var cur = 0
+    try {
+      dur = isFinite(video.duration) ? video.duration : 0
+      cur = isFinite(video.currentTime) ? video.currentTime : 0
+    } catch (e) {
+      /* ignore */
+    }
+    if (progressRange !== null) {
+      if (dur > 0) {
+        progressRange.max = String(dur)
+        progressRange.value = String(Math.min(cur, dur))
+      } else {
+        progressRange.max = '100'
+        progressRange.value = '0'
+      }
+    }
+    if (progressTime !== null) {
+      progressTime.textContent = formatTime(cur) + ' / ' + (dur > 0 ? formatTime(dur) : '--:--')
+    }
   }
 
   function showLayer() {
@@ -574,39 +636,63 @@
 
   // ────────────────────────────── 状态持久化 ──────────────────────────────
 
+  /** 组装要落盘的状态（含播放进度/是否在播，用于重启续播）。 */
+  function stateBody() {
+    var time = 0
+    if (video !== null) {
+      try {
+        if (isFinite(video.currentTime)) time = video.currentTime
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    return {
+      source: st.source,
+      count: st.count,
+      carousel: st.carousel,
+      muted: st.muted,
+      volume: st.volume,
+      focusOff: st.focusOff,
+      surface: st.surface,
+      veil: st.veil,
+      veilLight: st.veilLight,
+      fit: st.fit,
+      preserveBg: st.preserveBg,
+      rate: st.rate,
+      launcher: st.launcher || null,
+      resume: st.resume,
+      bvid: st.current && st.current.bvid ? st.current.bvid : '',
+      title: st.current && st.current.title ? st.current.title : '',
+      playing: st.playing === true,
+      time: Math.round(time * 10) / 10,
+    }
+  }
+
+  function postState(body, keepalive) {
+    if (!ROUTES.state) return
+    try {
+      var init = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      if (keepalive) init.keepalive = true
+      global.fetch(ROUTES.state, init)
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
   var persistTimer = null
   function persist() {
     if (!ROUTES.state) return
     if (persistTimer !== null) global.clearTimeout(persistTimer)
     persistTimer = global.setTimeout(function () {
       persistTimer = null
-      var body = {
-        source: st.source,
-        count: st.count,
-        carousel: st.carousel,
-        muted: st.muted,
-        volume: st.volume,
-        focusOff: st.focusOff,
-        surface: st.surface,
-        veil: st.veil,
-        veilLight: st.veilLight,
-        fit: st.fit,
-        preserveBg: st.preserveBg,
-        rate: st.rate,
-        launcher: st.launcher || null,
-        bvid: st.current && st.current.bvid ? st.current.bvid : '',
-        title: st.current && st.current.title ? st.current.title : '',
-      }
-      try {
-        global.fetch(ROUTES.state, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        })
-      } catch (e) {
-        /* ignore */
-      }
+      postState(stateBody(), false)
     }, 500)
+  }
+
+  /** 关闭页面时立刻把进度发出去（keepalive 提高送达率）。 */
+  function flushState() {
+    if (!ROUTES.state) return
+    postState(stateBody(), true)
   }
 
   function restoreState() {
@@ -626,10 +712,18 @@
         if (s.fit === 'cover' || s.fit === 'width') st.fit = s.fit
         if (typeof s.preserveBg === 'boolean') st.preserveBg = s.preserveBg
         st.rate = num(s.rate, st.rate, 0.25, 4)
+        st.resume = s.resume !== false
         if (s.launcher) applyLauncherPos(s.launcher)
         if (s.bvid && inputEl) inputEl.value = s.bvid
         syncControls()
         applyVeil()
+        // 启动续播：上次正在播且记了进度 → 自动接着播（无手势时浏览器会退回静音）
+        if (st.resume && s.bvid && s.playing === true) {
+          st.pendingSeek = num(s.time, 0, 0, 1e9)
+          global.setTimeout(function () {
+            loadAndPlay(s.bvid)
+          }, 60)
+        }
       },
       noop,
     )
@@ -928,6 +1022,54 @@
     now.appendChild(metaEl)
     panel.appendChild(now)
 
+    // 进度条（可拖动）
+    var progRow = el('div', 'dsbili-row')
+    var progHead = el('div', 'dsbili-rowhead')
+    progHead.appendChild(el('span', null, '进度'))
+    progressTime = el('span', 'dsbili-valued', '0:00 / 0:00')
+    progHead.appendChild(progressTime)
+    progressRange = el('input', 'dsbili-range')
+    progressRange.id = 'dsbili-progress'
+    progressRange.type = 'range'
+    progressRange.min = '0'
+    progressRange.max = '100'
+    progressRange.step = '0.1'
+    progressRange.value = '0'
+    progressRange.addEventListener('pointerdown', function () {
+      st.progressDragging = true
+    })
+    progressRange.addEventListener('input', function () {
+      if (video === null) return
+      var target = Number(progressRange.value)
+      if (!isFinite(target)) return
+      try {
+        video.currentTime = target
+      } catch (e) {
+        /* ignore */
+      }
+      if (progressTime !== null) {
+        var dur = 0
+        try {
+          dur = isFinite(video.duration) ? video.duration : 0
+        } catch (e) {
+          /* ignore */
+        }
+        progressTime.textContent = formatTime(target) + ' / ' + (dur > 0 ? formatTime(dur) : '--:--')
+      }
+    })
+    function endSeek() {
+      if (!st.progressDragging) return
+      st.progressDragging = false
+      updateProgressUi()
+      persist()
+    }
+    progressRange.addEventListener('pointerup', endSeek)
+    progressRange.addEventListener('pointercancel', endSeek)
+    progressRange.addEventListener('change', endSeek)
+    progRow.appendChild(progHead)
+    progRow.appendChild(progressRange)
+    panel.appendChild(progRow)
+
     // 播放控制
     var row1 = el('div', 'dsbili-btnrow')
     playBtn = el('button', 'dsbili-btn', '▶ 播放')
@@ -1202,6 +1344,17 @@
         },
         true,
       )
+    } catch (e) {
+      /* ignore */
+    }
+    // 关闭页面时立刻落一次进度，尽量让下次启动能接着播。
+    try {
+      global.addEventListener('beforeunload', function () {
+        flushState()
+      })
+      global.addEventListener('pagehide', function () {
+        flushState()
+      })
     } catch (e) {
       /* ignore */
     }
