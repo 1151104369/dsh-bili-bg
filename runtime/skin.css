@@ -27,6 +27,14 @@
   background: #06080c;
 }
 
+/* 「完整显示」时视频只占顶部一条，下方留空。留空区有两种处理：
+   - 默认（data-bg="blank"）：纯黑底，专注、不被别的东西干扰；
+   - data-bg="preserve"：背景层透明，露出它下面 dsh-video-skin 的装饰背景
+     （或主题画布色）——两插件背景就叠加在一起了。 */
+#dsbili-backdrop[data-bg="preserve"] {
+  background: transparent;
+}
+
 #dsbili-video {
   position: absolute;
   top: 0;

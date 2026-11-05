@@ -94,6 +94,7 @@
     veilLight: num(d.veillight, 0.3, 0, 0.92),
     surface: 0.5,
     fit: 'width',
+    preserveBg: true,
     rate: 1,
     expanded: false,
     launcher: null,
@@ -130,6 +131,7 @@
   var srcPopular = null
   var srcRanking = null
   var fitBtn = null
+  var bgBtn = null
   var miniPlayBtn = null
   var rateVal = null
   var rateButtons = []
@@ -176,6 +178,11 @@
       } catch (e) {
         /* ignore */
       }
+      try {
+        if (html && html.style) html.style.removeProperty('background-color')
+      } catch (e) {
+        /* ignore */
+      }
       if (html) html.removeAttribute('data-dsbili')
       return
     }
@@ -204,6 +211,24 @@
   /** 把"完整/铺满"写进视频元素的 data-fit。 */
   function applyFit() {
     if (video !== null) video.setAttribute('data-fit', st.fit === 'cover' ? 'cover' : 'width')
+  }
+
+  /**
+   * 背景层留空区：保留其他插件/主题背景（透明）还是纯黑。
+   * 保留时同时把 html 画布色设成主题底色，避免视频下方闪出浏览器默认白底。
+   */
+  function applyBgMode() {
+    var preserve = st.preserveBg === true
+    if (layer !== null) layer.setAttribute('data-bg', preserve ? 'preserve' : 'blank')
+    var html = doc.documentElement
+    if (html && html.style) {
+      try {
+        if (preserve) html.style.setProperty('background-color', isDark() ? '#0e1116' : '#eef1f5', 'important')
+        else html.style.removeProperty('background-color')
+      } catch (e) {
+        /* ignore */
+      }
+    }
   }
 
   /** 把蒙版透明度写到 CSS 变量（亮/暗各一份）。 */
@@ -262,6 +287,7 @@
     if (layer === null) return
     layer.setAttribute('data-idle', '0')
     applySurface(true)
+    applyBgMode()
     applyVeil()
     st.started = true
   }
@@ -563,6 +589,7 @@
         veil: st.veil,
         veilLight: st.veilLight,
         fit: st.fit,
+        preserveBg: st.preserveBg,
         rate: st.rate,
         launcher: st.launcher || null,
         bvid: st.current && st.current.bvid ? st.current.bvid : '',
@@ -595,6 +622,7 @@
         st.veilLight = num(s.veilLight, st.veilLight, 0, 0.92)
         st.surface = num(s.surface, st.surface, 0, 1)
         if (s.fit === 'cover' || s.fit === 'width') st.fit = s.fit
+        if (typeof s.preserveBg === 'boolean') st.preserveBg = s.preserveBg
         st.rate = num(s.rate, st.rate, 0.25, 4)
         if (s.launcher) applyLauncherPos(s.launcher)
         if (s.bvid && inputEl) inputEl.value = s.bvid
@@ -643,6 +671,7 @@
       muteBtn.setAttribute('aria-pressed', st.muted ? 'false' : 'true')
     }
     if (fitBtn !== null) fitBtn.textContent = st.fit === 'cover' ? '显示: 铺满' : '显示: 完整'
+    if (bgBtn !== null) bgBtn.textContent = st.preserveBg ? '背景: 保留' : '背景: 留空'
     if (miniPlayBtn !== null) miniPlayBtn.textContent = st.playing ? '⏸' : '▶'
     if (rateVal !== null) rateVal.textContent = String(st.rate) + 'x'
     for (var rbi = 0; rbi < rateButtons.length; rbi += 1) {
@@ -920,6 +949,14 @@
       persist()
     })
     rowFit.appendChild(fitBtn)
+    bgBtn = el('button', 'dsbili-btn', '背景: 保留')
+    bgBtn.addEventListener('click', function () {
+      st.preserveBg = !st.preserveBg
+      applyBgMode()
+      syncButtons()
+      persist()
+    })
+    rowFit.appendChild(bgBtn)
     panel.appendChild(rowFit)
 
     // 倍速
@@ -1117,7 +1154,10 @@
     // 主题切换时重新套用透明度
     try {
       var observer = new global.MutationObserver(function () {
-        if (st.started && !st.focusOff) applySurface(true)
+        if (st.started && !st.focusOff) {
+          applySurface(true)
+          applyBgMode()
+        }
       })
       observer.observe(doc.body, { attributes: true, attributeFilter: ['data-ds-dark-theme'] })
     } catch (e) {

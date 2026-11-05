@@ -200,4 +200,6 @@ ok('body got --dsw-alias-bg-base', bodyVars['--dsw-alias-bg-base'] !== undefined
 ok('video fit=width by default', video.getAttribute('data-fit') === 'width')
 const mini = findByClass(document.body, 'dsbili-mini')
 ok('floating pill has expandable mini bar (3 buttons)', !!mini && (mini.children || []).length === 3)
+const backdrop = findById(document.body, 'dsbili-backdrop')
+ok('preserve-bg mode default', !!backdrop && backdrop.getAttribute('data-bg') === 'preserve')
 console.log(`\n${pass} checks passed`)
