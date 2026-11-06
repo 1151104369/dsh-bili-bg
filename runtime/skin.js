@@ -167,6 +167,7 @@
   var bgBtn = null
   var miniPlayBtn = null
   var clearBtn = null
+  var miniFocusBtn = null
   var rateVal = null
   var rateButtons = []
   var progressRange = null
@@ -1367,6 +1368,7 @@
     if (bgBtn !== null) bgBtn.textContent = st.preserveBg ? '背景: 保留' : '背景: 留空'
     if (miniPlayBtn !== null) miniPlayBtn.textContent = st.playing ? '⏸' : '▶'
     if (clearBtn !== null) clearBtn.setAttribute('data-on', st.clear ? '1' : '0')
+    if (miniFocusBtn !== null) miniFocusBtn.setAttribute('data-on', st.focusOff ? '1' : '0')
     if (rateVal !== null) rateVal.textContent = String(st.rate) + 'x'
     for (var rbi = 0; rbi < rateButtons.length; rbi += 1) {
       var rb = rateButtons[rbi]
@@ -1469,6 +1471,21 @@
     else html.removeAttribute('data-dsbili-clear')
   }
 
+  /** 专注切换（隐藏/恢复视频画面）。面板按钮与悬浮胶囊的「专」共用。 */
+  function toggleFocus() {
+    st.focusOff = !st.focusOff
+    if (st.focusOff) {
+      hideLayer()
+      setStatus('已隐藏视频（专注），点“恢复显示”回来', '')
+    } else {
+      showLayer()
+      if (st.current !== null) tryPlay(!st.muted)
+      setStatus('已恢复显示', 'ok')
+    }
+    syncButtons()
+    persist()
+  }
+
   function toggleClear() {
     st.clear = !st.clear
     applyClear()
@@ -1528,9 +1545,17 @@
       if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
       toggleClear()
     })
+    miniFocusBtn = el('button', 'dsbili-mini-btn', '专')
+    miniFocusBtn.id = 'dsbili-mini-focus'
+    miniFocusBtn.setAttribute('title', '专注隐藏 / 恢复显示（隐藏视频画面继续工作）')
+    miniFocusBtn.addEventListener('click', function (ev) {
+      if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
+      toggleFocus()
+    })
     mini.appendChild(miniPlayBtn)
     mini.appendChild(miniNext)
     mini.appendChild(clearBtn)
+    mini.appendChild(miniFocusBtn)
     mini.appendChild(miniGear)
     launch.appendChild(mini)
 
@@ -1719,19 +1744,7 @@
     muteBtn = el('button', 'dsbili-btn', '🔊 有声')
     muteBtn.addEventListener('click', toggleMute)
     focusBtn = el('button', 'dsbili-btn', '🌙 专注隐藏')
-    focusBtn.addEventListener('click', function () {
-      st.focusOff = !st.focusOff
-      if (st.focusOff) {
-        hideLayer()
-        setStatus('已隐藏视频（专注），点“恢复显示”回来', '')
-      } else {
-        showLayer()
-        if (st.current !== null) tryPlay(!st.muted)
-        setStatus('已恢复显示', 'ok')
-      }
-      syncButtons()
-      persist()
-    })
+    focusBtn.addEventListener('click', toggleFocus)
     row2.appendChild(muteBtn)
     row2.appendChild(focusBtn)
     bodyEl.appendChild(row2)
@@ -2018,6 +2031,7 @@
       next: next,
       prev: prev,
       clear: toggleClear,
+      focus: toggleFocus,
       open: openPanel,
       close: closePanel,
       download: startDownloadCurrent,
