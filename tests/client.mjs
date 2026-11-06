@@ -215,6 +215,13 @@ function findByText(node, text) {
   return null
 }
 
+function hasText(node, text) {
+  if (!node) return false
+  if (node.textContent === text) return true
+  for (const c of node.children || []) if (hasText(c, text)) return true
+  return false
+}
+
 let pass = 0
 function ok(name, cond) {
   if (cond) {
@@ -255,6 +262,20 @@ await new Promise((r) => setTimeout(r, 60))
 const listEl = findByClass(document.body, 'dsbili-list')
 ok('queue list rendered', !!listEl && (listEl.children || []).length === 2)
 ok('queue list rows have index+title', !!listEl && (listEl.children[0].children || []).length === 2)
+
+// 布局顺序回归：音量/界面不透明度/蒙版 在 轮播·来源 之上，来源切换紧邻列表（用户要求的顺序）。
+const panelKids = panel.children || []
+const idxOf = (pred) => panelKids.findIndex(pred)
+const idxVolume = idxOf((c) => hasText(c, '音量'))
+const idxOpacity = idxOf((c) => hasText(c, '界面不透明度'))
+const idxSource = idxOf((c) => (c.children || []).some((x) => hasText(x, '首页推荐')))
+const idxList = idxOf((c) => String(c.className || '').split(/\s+/).indexOf('dsbili-list') !== -1)
+ok('layout: volume/opacity rows above source switcher', idxVolume >= 0 && idxOpacity > idxVolume && idxSource > idxOpacity, {
+  idxVolume,
+  idxOpacity,
+  idxSource,
+})
+ok('layout: source switcher right above list', idxSource >= 0 && idxList > idxSource, { idxSource, idxList })
 
 // ── 账号区 / 首页推荐 ──
 const account = findById(document.body, 'dsbili-account')

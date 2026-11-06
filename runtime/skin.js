@@ -1467,7 +1467,6 @@
     })
     row3.appendChild(carouselBtn)
     row3.appendChild(refreshBtn)
-    panel.appendChild(row3)
 
     var row4 = el('div', 'dsbili-btnrow')
     srcPopular = el('button', 'dsbili-btn', '热门')
@@ -1502,7 +1501,6 @@
     row4.appendChild(srcPopular)
     row4.appendChild(srcRanking)
     row4.appendChild(srcFeed)
-    panel.appendChild(row4)
 
     // 音量
     var volRow = el('div', 'dsbili-row')
@@ -1567,6 +1565,11 @@
     veilRow.appendChild(veilHead)
     veilRow.appendChild(veilRange)
     panel.appendChild(veilRow)
+
+    // 轮播 / 来源切换：放在音量·界面不透明度·蒙版之后、列表之前 ——
+    // 选完来源立刻在下方看到对应列表（用户反馈的布局顺序）。
+    panel.appendChild(row3)
+    panel.appendChild(row4)
 
     // 列表
     listEl = el('div', 'dsbili-list')
