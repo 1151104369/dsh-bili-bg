@@ -137,6 +137,13 @@
     qr: null,
     // 用户是否手动点过来源按钮。未手动选过时：已登录默认「首页推荐」，未登录回落「热门」。
     sourcePicked: false,
+    // 登录后高清（1080p+）走 DASH+MSE。hd=用户想不想用；hdEffective=当前是否真在走 MSE。
+    hd: false,
+    hdEffective: false,
+    hdFallback: '',
+    hdQuality: 80, // 请求 qn.cn（1080P ~ 116）
+    dashVideoIndex: 0,
+    dashAudioIndex: 0,
   }
 
   // DOM
@@ -185,6 +192,12 @@
   var dlTimer = null
   // 上一次轮询的 {时间, 已下载字节}，用来估算下载速度。
   var dlPrev = { at: 0, received: 0 }
+  // 登录后高清：MSE 播放器句柄 + 面板里的画质控件（隐藏时可能为 null）。
+  var dashPlayer = null
+  var hdBtn = null
+  var hdStateEl = null
+  var qualityWrap = null
+  var qualityButtons = []
 
   // ────────────────────────────── 界面表面半透明 ──────────────────────────────
 
@@ -329,6 +342,11 @@
     video.addEventListener('canplay', applyPendingSeek)
     video.addEventListener('error', function () {
       if (!video.error) return
+      // MSE 播放中出错：直接降级 720p 单文件，绝不白屏。
+      if (st.hdEffective || dashPlayer !== null) {
+        degradeTo720p('MSE 播放出错（code ' + video.error.code + '）')
+        return
+      }
       // 直连本机 HTTP 失败（跨源/端口不可达）时，回退到同源代理地址再试一次。
       if (!st.srcFallback && st.srcAbs !== '' && typeof video.src === 'string' && video.src.indexOf(st.srcAbs) !== -1) {
         st.srcFallback = true
@@ -360,6 +378,12 @@
   function applyPendingSeek() {
     if (st.pendingSeek === null || video === null) return
     var target = st.pendingSeek
+    // MSE 模式：交给播放器按两轨对称 seek（未就绪时它自己排队）。
+    if (st.hdEffective && dashPlayer !== null) {
+      st.pendingSeek = null
+      dashPlayer.seek(target)
+      return
+    }
     try {
       var dur = isFinite(video.duration) && video.duration > 0 ? video.duration : st.duration
       if (dur <= 0) return
@@ -494,23 +518,229 @@
     else settle(true)
   }
 
+  // ────────────────────────────── 登录后高清（MSE）──────────────────────────────
+
+  /** 相对媒体路径拼成"直连本机 HTTP"的绝对地址；拿不到 mediaBase 就用同源代理相对路径。 */
+  function trackAbs(rel, absBase) {
+    if (!rel) return ''
+    if (absBase && rel.charAt(0) === '/') return absBase + rel
+    return rel
+  }
+
+  /** 销毁当前 MSE 播放器（切回单文件 / 换轨 / 清屏时用）。 */
+  function destroyDash() {
+    if (dashPlayer !== null) {
+      try {
+        dashPlayer.destroy()
+      } catch (e) {
+        /* ignore */
+      }
+      dashPlayer = null
+    }
+    st.hdEffective = false
+  }
+
+  /** 从 play 结果的 dash 信息启动 MSE 播放器。 */
+  function startDash(data) {
+    if (video === null) return
+    var lib = global && global.__DSH_BILI_DASH__
+    if (!lib || typeof lib.create !== 'function') {
+      degradeTo720p('MSE 播放器不可用')
+      return
+    }
+    if (!data || data.hd !== true) {
+      degradeTo720p('没有高清分轨')
+      return
+    }
+    var vt = data.videoTracks && data.videoTracks[st.dashVideoIndex]
+    var at = data.audioTracks && data.audioTracks[st.dashAudioIndex] ? data.audioTracks[st.dashAudioIndex] : null
+    if (!at && data.audioTracks && data.audioTracks.length) at = data.audioTracks[0]
+    if (!vt || !vt.media) {
+      degradeTo720p('高清分轨缺失')
+      return
+    }
+    var absBase = typeof data.mediaBase === 'string' && data.mediaBase !== '' ? data.mediaBase : ''
+    var vAbs = trackAbs(vt.media, absBase)
+    var vRel = vt.media
+    var aAbs = at ? trackAbs(at.media, absBase) : ''
+    var aRel = at ? at.media : ''
+    var tracks = {
+      video: { media: vAbs, mediaProxy: vRel, mimeType: vt.mimeType || 'video/mp4', codecs: vt.codecs || '' },
+    }
+    if (aAbs) {
+      tracks.audio = { media: aAbs, mediaProxy: aRel, mimeType: at.mimeType || 'audio/mp4', codecs: at.codecs || '' }
+    }
+    destroyDash()
+    st.hdFallback = ''
+    st.hdEffective = false
+    setStatus('高清初始化中…', '')
+    dashPlayer = lib.create({
+      video: video,
+      duration: st.duration,
+      tracks: tracks,
+      fetchFn: function (url, init) {
+        var rel = url === vAbs ? vRel : url === aAbs ? aRel : null
+        return global
+          .fetch(url, init)
+          .catch(function () {
+            if (rel) return global.fetch(rel, init)
+            return Promise.reject(new Error('dash fetch failed'))
+          })
+      },
+      onFallback: function (reason) {
+        st.hdFallback = reason || 'MSE 回退'
+        degradeTo720p(st.hdFallback)
+      },
+      onStatus: function (s) {
+        if (s === 'ready') {
+          st.hdEffective = true
+          syncButtons()
+          if (st.pendingSeek !== null && dashPlayer !== null) {
+            var target = st.pendingSeek
+            st.pendingSeek = null
+            dashPlayer.seek(target)
+          }
+        }
+      },
+    })
+    if (dashPlayer && dashPlayer.load) {
+      try {
+        dashPlayer.load()
+      } catch (e) {
+        degradeTo720p('MSE 启动失败：' + (e && e.message ? e.message : String(e)))
+        return
+      }
+    }
+    showLayer()
+    tryPlay(!st.muted)
+    updateNow()
+    syncButtons()
+    persist()
+  }
+
+  /** MSE 失败/不可用：销毁并立刻回退 720p 单文件，绝不留白屏。 */
+  function degradeTo720p(reason) {
+    destroyDash()
+    st.hdEffective = false
+    st.hdFallback = reason || '已回退 720p'
+    setStatus('高清不可用：' + st.hdFallback + '，已回退 720p 单文件', 'error')
+    syncButtons()
+    if (st.current && st.current.bvid) {
+      var keepHd = st.hd
+      st.hd = false
+      loadAndPlay(st.current.bvid, { autoPlay: st.playing === true, hd: false })
+      st.hd = keepHd
+    }
+  }
+
+  /** 切换高清开关。 */
+  function toggleHd() {
+    if (!st.hd && !st.loggedIn) {
+      setStatus('高清（1080p+）需先登录（点「账号」→「二维码登录」）', 'error')
+      syncQuality()
+      return
+    }
+    st.hd = !st.hd
+    st.hdFallback = ''
+    if (!st.hd) {
+      destroyDash()
+      if (st.current && st.current.bvid) loadAndPlay(st.current.bvid)
+    } else if (st.current && st.current.bvid) {
+      loadAndPlay(st.current.bvid, { hd: true })
+    } else {
+      // 还没有当前视频：让后续播出的第一支直接上高清（loadAndPlay 缺省跟 st.hd）。
+      var typed = inputEl && inputEl.value ? inputEl.value : ''
+      if (typed) loadAndPlay(typed, { hd: true })
+      else if (st.queue.length) playQueueIndex(st.index < 0 ? 0 : st.index)
+      else loadQueue().then(function () {
+        if (st.queue.length) playQueueIndex(0)
+        else setStatus('先输入 BV 或加载队列后再开高清', 'error')
+      })
+    }
+    persist()
+    syncQuality()
+  }
+
+  /** 在已有分轨里切清晰度（无需重新拉 play 接口）。 */
+  function setHdQuality(index) {
+    st.dashVideoIndex = index >>> 0
+    persist()
+    syncQuality()
+    if (st.hdEffective && st.current && st.current.hd === true) {
+      st.hdFallback = ''
+      startDash(st.current)
+    }
+  }
+
+  /** 条高加 'P' 展示；没有则返回空。 */
+  function formatLabel(h) {
+    var n = Number(h) || 0
+    return n > 0 ? String(n) + 'P' : ''
+  }
+
+  /** 渲染画质控件状态（高清开关文案 + 当前分轨按钮）。 */
+  function syncQuality() {
+    var vt = st.current && Array.isArray(st.current.videoTracks) ? st.current.videoTracks : null
+    if (hdBtn !== null) {
+      hdBtn.setAttribute('data-on', st.hd ? '1' : '0')
+      hdBtn.textContent = st.hd ? '⬆ 高清已开' : '⬆ 高清'
+    }
+    if (hdStateEl !== null) {
+      var label = ''
+      if (!st.hd) label = '720p 单文件'
+      else if (st.hdFallback) label = '已回退 720p'
+      else if (st.hdEffective && st.current) label = (formatLabel(st.current.height) || st.current.quality || '') + ' 高清'
+      else label = '高清…'
+      hdStateEl.textContent = label
+    }
+    if (qualityWrap === null) return
+    qualityWrap.textContent = ''
+    qualityButtons = []
+    if (!st.hd || !vt || vt.length === 0) {
+      var note = el('span', 'dsbili-hd-note', st.loggedIn ? '该视频暂无更多清晰度分轨' : '登录后可解锁高清')
+      note.style.opacity = '0.5'
+      qualityWrap.appendChild(note)
+      return
+    }
+    for (var i = 0; i < vt.length; i += 1) {
+      ;(function (idx) {
+        var t = vt[idx]
+        var label = formatLabel(t.height) + (t.id ? '·' + t.id : '')
+        if (t.frameRate && String(t.frameRate).indexOf('60') !== -1) label += ' 60fps'
+        var btn = el('button', 'dsbili-btn dsbili-hd-btn', label)
+        btn.setAttribute('data-rate', String(idx))
+        btn.setAttribute('data-on', idx === st.dashVideoIndex ? '1' : '0')
+        btn.addEventListener('click', function () {
+          setHdQuality(idx)
+        })
+        qualityWrap.appendChild(btn)
+        qualityButtons.push(btn)
+      })(i)
+    }
+    hdBtn.setAttribute('data-count', String(qualityButtons.length))
+  }
+
   /**
    * 解析并播放一个输入（BV / 链接 / aid）。
    * @param {string} input BV 号 / 链接
-   * @param {{autoPlay?: boolean}} [opts] autoPlay=false 时只加载（恢复到上次暂停的位置），不自动播放
+   * @param {{autoPlay?: boolean, hd?: boolean}} [opts] autoPlay=false 时只加载（恢复到上次暂停的位置），不自动播放；
+   *   hd 覆盖本次是否请求高清（缺省跟 st.hd；降级回 720p 时显式传 false）
    */
   function loadAndPlay(input, opts) {
     if (st.busy) return
     var autoPlay = !(opts && opts.autoPlay === false)
+    var wantHd = opts && typeof opts.hd === 'boolean' ? opts.hd : st.hd === true
     var query = str(input).trim()
     if (query === '') {
       setStatus('请先输入 BV 号或 bilibili 链接', 'error')
       return
     }
     st.busy = true
-    setStatus('解析中…', '')
+    setStatus(wantHd ? '解析高清源…' : '解析中…', '')
     syncButtons()
-    fetchJson(ROUTES.play + '?bvid=' + encodeURIComponent(query), { cache: 'no-store' })
+    var playUrl = ROUTES.play + '?bvid=' + encodeURIComponent(query)
+    if (wantHd) playUrl += '&hd=1&qn=' + String(st.hdQuality)
+    fetchJson(playUrl, { cache: 'no-store' })
       .then(
         function (data) {
           st.busy = false
@@ -527,6 +757,40 @@
           st.srcRel = data.src
           st.srcAbs = ''
           st.srcFallback = false
+          // 新视频：分轨索引回到默认（服务端给的 defaultVideoIndex 是 ≤1080p 的最高一条）。
+          if (data.hd === true) {
+            st.dashVideoIndex = data.dash && isFinite(Number(data.dash.defaultVideoIndex)) ? Number(data.dash.defaultVideoIndex) : 0
+            st.dashAudioIndex = data.dash && isFinite(Number(data.dash.defaultAudioIndex)) ? Number(data.dash.defaultAudioIndex) : 0
+            st.hdFallback = ''
+          }
+          if (st.focusOff) {
+            // 专注模式：只加载视频，不把画面亮出来（layer 保持 data-idle=1 隐藏）。
+            if (layer === null) ensureLayer()
+            if (layer !== null) layer.setAttribute('data-idle', '1')
+          } else {
+            showLayer()
+            if (layer === null) ensureLayer()
+          }
+          // 走 MSE 高清：不再给 <video> 设单文件 src（那个路径拿不到 >720p）。
+          if (data.hd === true && wantHd) {
+            destroyDash()
+            st.hdEffective = false
+            startDash(data)
+            setStatus('高清播放中（' + (data.height ? data.height + 'P' : 'DASH') + '）', 'ok')
+            updateNow()
+            syncButtons()
+            syncQuality()
+            persist()
+            return
+          }
+          // 服务端说拿不到高清 → 明确告知用户，并按 720p 单文件播（不白屏）。
+          var fallbackNote = ''
+          if (wantHd && data.fallback) {
+            fallbackNote = String(data.fallback)
+            st.hdFallback = fallbackNote
+            st.hdEffective = false
+            destroyDash()
+          }
           var src = data.src
           if (
             typeof data.mediaBase === 'string' &&
@@ -537,13 +801,9 @@
             st.srcAbs = data.mediaBase + src
             src = st.srcAbs
           }
-          if (st.focusOff) {
-            // 专注模式：只加载视频，不把画面亮出来（layer 保持 data-idle=1 隐藏）。
-            if (layer === null) ensureLayer()
-            if (layer !== null) layer.setAttribute('data-idle', '1')
-          } else {
-            showLayer()
-            if (layer === null) ensureLayer()
+          // 已经从 MSE 退回单文件：先把 MSE 挂的 blob src 停掉，避免残留。
+          if (video !== null && dashPlayer === null && st.hdEffective === false) {
+            /* destroyDash 已在上面的高清分支处理；这里只保证兜底 */
           }
           if (video !== null) {
             video.removeAttribute('data-shown')
@@ -570,14 +830,19 @@
           }
           updateNow()
           syncButtons()
-          setStatus(
-            autoPlay
-              ? '正在播放'
-              : st.focusOff
-                ? '专注模式保持中（点「恢复显示」回来看）'
-                : '已恢复上次暂停的视频（点播放继续）',
-            autoPlay ? 'ok' : '',
-          )
+          syncQuality()
+          if (fallbackNote) {
+            setStatus('高清不可用：' + fallbackNote + '，已用 720p 单文件播放', 'error')
+          } else {
+            setStatus(
+              autoPlay
+                ? '正在播放'
+                : st.focusOff
+                  ? '专注模式保持中（点「恢复显示」回来看）'
+                  : '已恢复上次暂停的视频（点播放继续）',
+              autoPlay ? 'ok' : '',
+            )
+          }
           persist()
         },
         function (error) {
@@ -1014,6 +1279,9 @@
       rate: st.rate,
       launcher: st.launcher || null,
       resume: st.resume,
+      // 高清开关与清晰度选择要跨重启记住（登录态下才生效）。
+      hd: st.hd === true,
+      hdQuality: st.hdQuality,
       bvid: st.current && st.current.bvid ? st.current.bvid : '',
       title: st.current && st.current.title ? st.current.title : '',
       playing: st.playing === true,
@@ -1082,6 +1350,9 @@
         if (typeof s.preserveBg === 'boolean') st.preserveBg = s.preserveBg
         st.rate = num(s.rate, st.rate, 0.25, 4)
         st.resume = s.resume !== false
+        // 高清偏好恢复。
+        st.hd = s.hd === true
+        st.hdQuality = num(s.hdQuality, st.hdQuality, 1, 999)
         // 专注模式（隐藏画面）也是持久状态：上次退出时开着，重启后应当保持隐藏，
         // 而不是把画面直接亮出来。必须在 syncControls / 续播之前恢复。
         st.focusOff = s.focusOff === true
@@ -1679,10 +1950,16 @@
       if (video === null) return
       var target = Number(progressRange.value)
       if (!isFinite(target)) return
-      try {
-        video.currentTime = target
-      } catch (e) {
-        /* ignore */
+      // 高清（MSE）：seek 必须由播放器对称处理两轨（同时 flush、都从关键帧重填）。
+      // 已缓冲范围内交给 media element 原生快 seek，两轨共享时间轴，天然同步。
+      if (st.hdEffective && dashPlayer !== null) {
+        dashPlayer.seek(target)
+      } else {
+        try {
+          video.currentTime = target
+        } catch (e) {
+          /* ignore */
+        }
       }
       if (progressTime !== null) {
         var dur = 0
@@ -1708,6 +1985,23 @@
     progRow.appendChild(progHead)
     progRow.appendChild(progressRange)
     bodyEl.appendChild(progRow)
+
+    // 登录后高清：开关 + 分轨清晰度（未登录/无分轨时降级展示，但开关仍在）。
+    var hdRow = el('div', 'dsbili-row dsbili-hdrow')
+    var hdHead = el('div', 'dsbili-rowhead')
+    hdHead.appendChild(el('span', null, '高清（1080p+）'))
+    hdStateEl = el('span', 'dsbili-valued dsbili-hd-state', '720p 单文件')
+    hdHead.appendChild(hdStateEl)
+    hdBtn = el('button', 'dsbili-btn dsbili-hd-btn', '⬆ 高清')
+    hdBtn.id = 'dsbili-hd-btn'
+    hdBtn.setAttribute('title', '登录后可解锁 1080p+ 高清（DASH+MSE）。正在播放时切换立即生效。')
+    hdBtn.addEventListener('click', toggleHd)
+    hdRow.appendChild(hdHead)
+    hdRow.appendChild(hdBtn)
+    qualityWrap = el('div', 'dsbili-hd-quality')
+    bodyEl.appendChild(hdRow)
+    bodyEl.appendChild(qualityWrap)
+    syncQuality()
 
     // 下载当前视频：宿主有 download 路由才可用，否则按钮禁用（清晰回退）。
     var dlRow = el('div', 'dsbili-row dsbili-dlrow')
@@ -1933,7 +2227,7 @@
     bodyEl.appendChild(statusEl)
 
     var foot = el('div', 'dsbili-foot')
-    foot.appendChild(el('span', null, '无登录画质 360p~720p'))
+    foot.appendChild(el('span', null, '登录 + 开高清 = 1080p+（DASH/MSE）；关闭即 720p'))
     var reset = el('span', null, '清空状态')
     reset.style.cursor = 'pointer'
     reset.addEventListener('click', function () {
@@ -2032,6 +2326,7 @@
       prev: prev,
       clear: toggleClear,
       focus: toggleFocus,
+      hd: toggleHd,
       open: openPanel,
       close: closePanel,
       download: startDownloadCurrent,
@@ -2043,6 +2338,7 @@
       },
       teardown: function () {
         stopDownloadPoll()
+        destroyDash()
         hideLayer()
         if (layer && layer.parentNode) layer.parentNode.removeChild(layer)
         if (panel && panel.parentNode) panel.parentNode.removeChild(panel)

@@ -21,7 +21,9 @@ import {
   ROUTE_PREFIX,
   fetchQueue,
   openMediaStream,
+  openDashMedia,
   resolveBvid,
+  resolveBvidHd,
 } from './lib/bili.js'
 import {
   generateQr,
@@ -45,7 +47,7 @@ export const name = 'dsh-bili-bg'
 export const inject = []
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.2.0'
+export const VERSION = '0.3.0'
 
 const CONFIG_ROUTE = `${ROUTE_PREFIX}/config.json`
 const PLAY_ROUTE = `${ROUTE_PREFIX}/play`
@@ -222,7 +224,8 @@ export function apply(ctx) {
     try {
       const cssText = readRuntime('skin.css')
       const jsText = readRuntime('skin.js')
-      table.push(...buildInjectionRows({ clientConfig: current(), cssText, jsText }))
+      const dashText = readRuntime('dash.js')
+      table.push(...buildInjectionRows({ clientConfig: current(), cssText, jsText, dashText }))
     } catch (error) {
       warn(`注入行生成失败，页面将没有 B 站背景面板：${describe(error)}`)
     }
@@ -249,7 +252,9 @@ export function apply(ctx) {
         }),
       )
 
-      // 解析一个 BV/链接 → 元数据 + 同源播放地址。
+      // 解析一个 BV/链接 → 元数据 + 播放地址。
+      // ?hd=1 → 带登录 Cookie 走 DASH 分轨（高清，>720p，url 里可再带 qn=80/112/116 指定清晰度）；
+      // 否则走现有单文件 mp4（无登录 ~360p~720p）。DASH 拿不到会由宿主自动回退 720p 单文件。
       disposers.push(
         child.webServer.register({
           kind: 'exact',
@@ -275,8 +280,15 @@ export function apply(ctx) {
                 return ''
               }
             })()
-            resolveBvid(input)
+            const hd = url.searchParams.get('hd') === '1'
+            const qn = parseInt(url.searchParams.get('qn') || '0', 10)
+            const cookie = hd ? buildCookieHeader(homeDir) : ''
+            const task = hd
+              ? resolveBvidHd(input, cookie, qn || undefined)
+              : resolveBvid(input)
+            task
               .then((result) => {
+                // 直连本机 HTTP 时，把 mediaBase 挂到结果上（单文件 src 与 DASH 各轨的 media 都是相对路径）。
                 if (mediaBase !== '' && result && typeof result.src === 'string' && result.src.charAt(0) === '/') {
                   result.mediaBase = mediaBase
                 }
@@ -288,6 +300,7 @@ export function apply(ctx) {
       )
 
       // 播放流代理：带 Range 转发，供 <video> 加载/拖进度。
+      // ?kind=video|audio&idx=N → 代理 DASH 分轨（MSE 用）；否则代理单文件 mp4。
       disposers.push(
         child.webServer.register({
           kind: 'exact',
@@ -302,7 +315,17 @@ export function apply(ctx) {
               return
             }
             const range = typeof req.headers.range === 'string' ? req.headers.range : undefined
-            openMediaStream(bvid, cid, range)
+            const kind = url.searchParams.get('kind') || ''
+            const idx = url.searchParams.get('idx')
+            const qn = parseInt(url.searchParams.get('qn') || '0', 10)
+            // DASH 分轨的播放地址已带登录态签名，但解析分轨需 cookie 才能拿到该清晰度，
+            // 所以这里仍带 cookie 重解析一次（有 90s 缓存兜底）；CDN 本身靠 Referer。
+            const cookie = kind ? buildCookieHeader(homeDir) : ''
+            const task =
+              kind && idx !== null
+                ? openDashMedia(bvid, cid, kind, idx, range, cookie, qn || undefined)
+                : openMediaStream(bvid, cid, range)
+            task
               .then((upstream) => {
                 if (!upstream || upstream.error) {
                   const message = upstream?.error || 'no playable source'
@@ -315,6 +338,8 @@ export function apply(ctx) {
                   'Content-Type': upstream.headers['content-type'] || 'video/mp4',
                   'Accept-Ranges': upstream.headers['accept-ranges'] || 'bytes',
                   'Cache-Control': 'no-store',
+                  // MSE 用 fetch 从页面直连 127.0.0.1 拉分轨（不同源），必须有 CORS 头。
+                  'Access-Control-Allow-Origin': '*',
                 }
                 if (upstream.headers['content-length']) headers['Content-Length'] = upstream.headers['content-length']
                 if (upstream.headers['content-range']) headers['Content-Range'] = upstream.headers['content-range']

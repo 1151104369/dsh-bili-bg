@@ -457,6 +457,157 @@ ok('focus mode restored after restart', recoverApi.state.focusOff === true)
 const recoverBackdrop = findById(recoverDoc.body, 'dsbili-backdrop')
 ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBackdrop.getAttribute('data-idle') === '1')
 
+// ── 登录后高清（DASH+MSE）：开关 + 分轨清晰度 + 回退路径 ──
+{
+  const hdDoc = makeDocument()
+  // 伪造一个可用的 MSE 播放器：create 记下 tracks，加载后立刻 onStatus('ready')。
+  const playerCalls = []
+  function FakeDashPlayer(opts) {
+    if (opts && typeof opts.onStatus === 'function') {
+      // 异步触发 ready，模拟 MSE 就绪
+      setTimeout(() => opts.onStatus('ready'), 10)
+    }
+    return {
+      load() {
+        playerCalls.push({ kind: 'load', tracks: opts && opts.tracks })
+      },
+      destroy() {
+        playerCalls.push({ kind: 'destroy' })
+      },
+      seek(t) {
+        playerCalls.push({ kind: 'seek', t })
+      },
+      play() {},
+    }
+  }
+  const fakeDashLib = {
+    version: '1.0.0',
+    supported: () => true,
+    create: (opts) => FakeDashPlayer(opts),
+  }
+
+  let hdAuth = { loggedIn: true, account: { uname: 'HD测试', mid: 8 } }
+  function hdFetch(url, opts) {
+    const u = String(url)
+    let payload = {}
+    if (u.includes('/auth/status')) payload = { ok: true, ...hdAuth }
+    else if (u.includes('/state')) {
+      payload = opts && opts.method === 'POST' ? { ok: true } : { ok: true, state: {} }
+    }
+    // 高清请求：返回 DASH 分轨
+    else if (u.includes('/play') && u.includes('hd=1')) {
+      payload = {
+        ok: true,
+        hd: true,
+        bvid: 'BV1HDTEST',
+        title: '高清测试',
+        duration: 200,
+        height: 1080,
+        quality: 80,
+        format: 'dash',
+        src: '/dsh-bili/media?bvid=BV1HDTEST&cid=1',
+        mediaBase: 'http://127.0.0.1:55999',
+        videoTracks: [
+          { index: 0, id: 80, height: 1080, codecs: 'avc1.640028', mimeType: 'video/mp4', media: '/dsh-bili/media?bvid=BV1HDTEST&cid=1&kind=video&idx=0&qn=80' },
+          { index: 1, id: 64, height: 720, codecs: 'avc1.64001f', mimeType: 'video/mp4', media: '/dsh-bili/media?bvid=BV1HDTEST&cid=1&kind=video&idx=1&qn=80' },
+        ],
+        audioTracks: [
+          { index: 0, id: 30280, codecs: 'mp4a.40.2', mimeType: 'audio/mp4', media: '/dsh-bili/media?bvid=BV1HDTEST&cid=1&kind=audio&idx=0&qn=80' },
+        ],
+        dash: { defaultVideoIndex: 0, defaultAudioIndex: 0 },
+      }
+    }
+    // 单文件回退
+    else if (u.includes('/play')) {
+      payload = { ok: true, bvid: 'BV1HDTEST', title: '高清测试', src: '/dsh-bili/media?bvid=BV1HDTEST&cid=1', duration: 200, quality: 64 }
+    }
+    return Promise.resolve({ json: () => Promise.resolve(payload), headers: { get: () => '' } })
+  }
+
+  const hdWin = {
+    document: hdDoc,
+    fetch: hdFetch,
+    setTimeout,
+    clearTimeout,
+    MutationObserver: undefined,
+    console,
+    location: { search: '' },
+    __DSH_BILI_BG__: window.__DSH_BILI_BG__,
+    __DSH_BILI_DASH__: fakeDashLib,
+  }
+  hdWin.window = hdWin
+  hdWin.globalThis = hdWin
+  const hdRunner = new Function(
+    'window',
+    'document',
+    'fetch',
+    'setTimeout',
+    'clearTimeout',
+    'console',
+    code + '\nreturn window.__DSH_BILI_BG_API__;',
+  )
+  const hdApi = hdRunner(hdWin, hdDoc, hdFetch, setTimeout, clearTimeout, console)
+  await new Promise((r) => setTimeout(r, 80))
+
+  const hdBtnEl = findById(hdDoc.body, 'dsbili-hd-btn')
+  ok('hd toggle button built', !!hdBtnEl && hdBtnEl.textContent.indexOf('高清') !== -1)
+  ok('hd off by default', hdApi.state.hd === false)
+  // 先播一个单文件视频，再开高清（真实交互顺序：播放中切换画质）。
+  hdApi.play('BV1HDTEST')
+  await new Promise((r) => setTimeout(r, 60))
+  ok('base play loaded a current video', !!hdApi.state.current && hdApi.state.current.bvid === 'BV1HDTEST')
+  // 打开高清 → 重新解析 hd=1 → startDash → MSE ready → hdEffective
+  playerCalls.length = 0
+  hdApi.hd()
+  await new Promise((r) => setTimeout(r, 140))
+  ok('hd enabled after toggle', hdApi.state.hd === true)
+  ok('hd effective (MSE ready) after load', hdApi.state.hdEffective === true)
+  ok('hd player created with two tracks', playerCalls.some((c) => c.kind === 'load' && c.tracks && c.tracks.video && c.tracks.audio))
+  ok(
+    'hd uses direct mediaBase for fetch',
+    playerCalls.some(
+      (c) => c.kind === 'load' && c.tracks && c.tracks.video.media.indexOf('http://127.0.0.1:55999') === 0,
+    ),
+    playerCalls.length ? playerCalls[0].tracks && playerCalls[0].tracks.video.media : '',
+  )
+  // 分轨清晰度按钮已渲染（1080P 与 720P 两条）
+  const btnsOfWrap = []
+  ;(function collect(elNode) {
+    if (!elNode) return
+    if (String(elNode.className || '').indexOf('dsbili-hd-btn') !== -1 && elNode !== hdBtnEl) btnsOfWrap.push(elNode)
+    for (const c of elNode.children || []) collect(c)
+  })(hdDoc.body)
+  ok('quality buttons rendered (1080P + 720P)', btnsOfWrap.length === 2, btnsOfWrap.length)
+  // 关闭高清 → 立即回 720p 单文件，不白屏
+  playerCalls.length = 0
+  hdApi.hd()
+  await new Promise((r) => setTimeout(r, 120))
+  ok('hd off after toggle', hdApi.state.hd === false)
+  const hdOffVideo = findById(hdDoc.body, 'dsbili-video')
+  const offSrc = hdOffVideo ? String(hdOffVideo.src) : ''
+  ok(
+    'single-file src reattached after hd off (no blank)',
+    !!hdOffVideo && offSrc.indexOf('kind=video') === -1 && offSrc.indexOf('/dsh-bili/media') !== -1,
+    offSrc,
+  )
+  ok('dash player destroyed when hd off', playerCalls.some((c) => c.kind === 'destroy'))
+  ok('hd no longer effective after off', hdApi.state.hdEffective === false)
+  // MSE 不可用（__DSH_BILI_DASH__ 缺失，模拟不支持 MSE 的内核）→ 开高清也不白屏，落到 720p 单文件
+  hdWin.__DSH_BILI_DASH__ = null
+  hdApi.hd()
+  await new Promise((r) => setTimeout(r, 160))
+  const nomVideo = findById(hdDoc.body, 'dsbili-video')
+  const nomSrc = nomVideo ? String(nomVideo.src) : ''
+  ok(
+    'hd without MSE falls back without blank (video + single-file src intact)',
+    !!nomVideo && nomSrc.indexOf('/dsh-bili/media') !== -1 && nomSrc.indexOf('kind=video') === -1,
+    nomSrc,
+  )
+  ok('hd without MSE reports effective=false', hdApi.state.hdEffective === false)
+  hdWin.__DSH_BILI_DASH__ = fakeDashLib
+  hdApi.teardown()
+}
+
 // 清理主 runtime 的轮询定时器，否则下载轮询会让测试进程无法退出。
 api.teardown()
 

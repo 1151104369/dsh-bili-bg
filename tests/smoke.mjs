@@ -64,11 +64,15 @@ apply(fakeCtx)
 // ① 索引注入行
 const rows = []
 injectHandler(rows)
-assert.equal(rows.length, 2, '应注入 2 行（style + script）')
+// 阶段新增 MSE 播放器：style + dash.js + skin.js 三条。
+assert.equal(rows.length, 3, '应注入 3 行（style + dash + skin）')
 assert.equal(rows[0].kind, 'style')
 assert.equal(rows[1].kind, 'script')
 assert.equal(rows[1].placement, 'body')
-assert.ok(rows[1].text.includes('__DSH_BILI_BG__'), '脚本应包含 bootstrap 全局')
+assert.equal(rows[2].kind, 'script')
+assert.equal(rows[2].placement, 'body')
+assert.ok(rows[2].text.includes('__DSH_BILI_BG__'), 'skin 脚本应包含 bootstrap 全局')
+assert.ok(rows[1].text.includes('__DSH_BILI_DASH__'), 'dash 脚本应暴露 MSE 播放器命名空间')
 assert.ok(rows[0].text.includes('#dsbili-launch'), '样式应包含入口胶囊选择器')
 // 回归：面板是 flex column + max-height，必须禁止子项收缩，否则内容超长时队列列表被压扁"消失"。
 assert.ok(
@@ -83,8 +87,8 @@ assert.ok(
     !rows[0].text.includes('position: sticky'),
   '样式应为固定标题栏 + 内部滚动 body（标题栏不随内容滚动）',
 )
-assert.ok(rows[1].text.includes('dsbili-launch'), '脚本应创建入口胶囊')
-assert.ok(rows[1].text.includes('Ctrl+Shift+B'), '脚本应带键盘入口')
+assert.ok(rows[2].text.includes('dsbili-launch'), '皮肤脚本应创建入口胶囊')
+assert.ok(rows[2].text.includes('Ctrl+Shift+B'), '皮肤脚本应带键盘入口')
 
 // ② 起真服务器
 const server = http.createServer((req, res) => {
@@ -123,6 +127,25 @@ ok('play', play.ok === true && play.bvid === 'BV1GJ411x7h7' && !!play.src, {
   quality: play.quality,
 })
 ok('play exposes direct mediaBase', play.mediaBase === 'http://127.0.0.1:55999', { base: play.mediaBase })
+
+// 登录后高清：未登录请求 hd=1 → 应优雅回退 720p 单文件（hd:false + fallback + 有 src 可播，不报错）
+const playHdNoLogin = await (
+  await fetch(base + '/dsh-bili/play?bvid=BV1GJ411x7h7&hd=1&qn=80')
+).json()
+ok('play hd without login falls back gracefully', playHdNoLogin.ok === true, {
+  ok: playHdNoLogin.ok,
+  error: playHdNoLogin.error,
+})
+ok(
+  'play hd fallback is single-file non-hd with playable src',
+  playHdNoLogin.ok === true &&
+    playHdNoLogin.hd === false &&
+    !!playHdNoLogin.src &&
+    String(playHdNoLogin.src).indexOf('/dsh-bili/media') === 0 &&
+    typeof playHdNoLogin.fallback === 'string' &&
+    playHdNoLogin.fallback.length > 0,
+  { hd: playHdNoLogin.hd, fallback: playHdNoLogin.fallback, src: playHdNoLogin.src },
+)
 
 // play via full url
 const playUrl = await (

@@ -31,6 +31,15 @@
 - **记住播放进度**：每 5 秒 + 暂停/关闭页面时保存；重启后**播放中退出**自动接着播
   （无手势时浏览器会静音，点 🔊 开声音），**暂停时退出**则恢复那一支到原进度但保持暂停，
   点播放继续——不会丢视频、不用回列表重选
+- **登录后高清（1080p+）**：控制面板「高清（1080p+）」开关（快捷键/胶囊「专」下方）。
+  - 打开后带登录 Cookie 走 DASH 分轨（qn=80/112/116，fnval=4048），在**同一个 `<video>`**
+    上用 MSE 挂 video/audio 两个 SourceBuffer 混流，浏览器统一时间轴保证音画同步
+    （各轨先 append 自己的 init 段，再按时间序 append 媒体分片）。
+  - 可选的**分轨清晰度**按钮（如 1080P / 720P…，同一份 DASH 直接切换、不重拉 play 接口）。
+  - 拖动进度、暂停、倍速、清屏/专注下**两轨对称 seek/回收**，seek 从目标前最近关键帧重填。
+  - **画质降级开关**：关闭「高清」立即回到 720p 单文件；MSE 不可用/失败时宿主自动回退
+    720p 单文件并提示，**绝不白屏**。
+  - 未登录开高清会提示「需登录」；服务端拿不到分轨也会自动回退并明确告知。
 - 快捷键 `Ctrl+Shift+B` 开关面板
 
 ## 接入方式
@@ -48,24 +57,28 @@
 
 ```
 index.js            宿主插件：注入行 + 路由（config/play/media/queue/state/auth/download）
-lib/bili.js         B 站接口客户端 + 带 Range 的本地播放流代理 + 首页推荐(feed)
+lib/bili.js         B 站接口客户端 + 带 Range 的本地播放流代理 + DASH 分轨解析(登录高清) + 首页推荐(feed)
 lib/auth.js         二维码登录、Cookie 持久化（收紧权限）、账号信息、退出
 lib/wbi.js          WBI 签名（mixin key + w_rid，首页推荐接口必需）
 lib/qr.js           纯 Node 内建 MIT 二维码编码 + PNG 渲染（无需再登录态二维码图）
 lib/download.js     视频下载：流式写 .part → 原子 rename，并发 2、内存任务表
 lib/save-dialog.js  Windows「另存为」对话框（PowerShell + WinForms，零依赖）
 lib/injections.js   webserver/index-inject 结构化注入行
-runtime/skin.js     浏览器端：背景层 + 悬浮胶囊 + 控制面板 + 账号区 + 进度/倍速/清屏
+runtime/skin.js     浏览器端：背景层 + 悬浮胶囊 + 控制面板 + 账号区 + 进度/倍速/清屏 + 高清开关
+runtime/dash.js     浏览器端 MSE DASH 播放器：init-先+mof 索引 seek+两轨对称回收+降级回退（独立模块）
 runtime/skin.css    样式
 tests/smoke.mjs     宿主冒烟（临时 DSH_HOME，不碰真实状态）
 tests/client.mjs    客户端 DOM stub 测试
+tests/mse.mjs       MSE 播放器单测（ISO-BMFF 解析 + 装配/回退）
 ```
 
 ## 已知限制
 
-- **画质仍封顶约 360p~720p**：本阶段已支持登录，但播放源仍走无登录的低清路径；
-  **更高画质（1080p/4K）需走 DASH 分轨 + MSE 混流**，属于下一阶段，暂不引入。
-- 播放流经本地代理（带 `Referer` + `Range`）。Electron 的 `dsh-app://` 转发层会丢掉 `Content-Length`，会让 `<video>` 无法 seek，所以客户端优先**直连本机 HTTP**、失败再回退代理。
+- 高清需要**登录态**：未登录或该清晰度拿不到分轨时自动回退 720p 单文件（面板会提示）。
+  4K / 杜比等更高级别既定级到 1080p，未做自适应码率（ABR）；长时间播放主要受网络抖动影响。
+- MSE 播放：`video`/`audio` 两条 SourceBuffer 由 media element 统一时钟；seek 到未缓冲处会
+  两轨对称 flush 并从目标前最近关键帧重填，已缓冲范围内走原生快 seek。
+- 播放流经本地代理（带 `Referer` + `Range`）。Electron 的 `dsh-app://` 转发层会丢掉 `Content-Length`，会让 `<video>` 无法 seek，所以客户端优先**直连本机 HTTP**、失败再回退代理；MSE 取分轨也是直连 + 断线回退同源代理。
 - 清屏依赖 `dsh-client-ui-layout` 的类名（匹配 `[class*="centerCol"]` / `[class*="sidebarCol"]`）。
 - 仅面向 desktop profile（Electron 桌面壳）。
 - **窗口大小不归本插件管**：DSH 桌面壳把主窗口尺寸硬编码在 `createWindow()`，且插件拿不到窗口控制
@@ -73,8 +86,8 @@ tests/client.mjs    客户端 DOM stub 测试
 
 ## 状态文件
 
-- `$DSH_HOME/dsh-bili-bg.json`：记录来源（含手动选择标记）、上次 BV、音量/倍速/显示方式、
-  专注模式、悬浮胶囊位置、播放进度（含是否在播/进度秒数）、诊断信息。
+- `DSH_HOME/dsh-bili-bg.json`：记录来源（含手动选择标记）、上次 BV、音量/倍速/显示方式、
+  专注模式、悬浮胶囊位置、播放进度（含是否在播/进度秒数）、**高清开关与清晰度偏好**、诊断信息。
 - `$DSH_HOME/dsh-bili-bg-auth.json`：**登录凭据（Cookie）**，敏感凭证——写入时收紧文件权限
   （POSIX 0600；Windows 尽力 via `icacls` 且收紧后自检可读），日志/接口都**不回显**，面板只显示昵称/头像。
 
@@ -89,12 +102,13 @@ tests/client.mjs    客户端 DOM stub 测试
 1. **✅ B 站账号登录（二维码扫码）**：`passport-login/web/qrcode/generate` → 轮询 `poll` → 保存 Cookie
 2. **✅ 账号首页 / 推荐列表**：登录后取首页推荐 feed（wbi 签名）
 3. **✅ 视频下载**：另存为对话框、进度/速度、中途取消（0.2.0）
-4. **登录后高画质**：带 Cookie 请求 playurl，按需接入 DASH + MSE 混流（下一阶段）
-5. 弹幕、分 P / 合集、纯氛围静音墙纸模式
+4. **✅ 登录后高画质**：带 Cookie 请求 playurl(DASH) + 双轨 MSE 混流 + 画质降级开关（本阶段完成）
+5. 4K / 杜比、自适应码率（ABR）、弹幕、分 P / 合集、纯氛围静音墙纸模式
 
 ## 开发
 
 ```bash
 node tests/smoke.mjs    # 宿主冒烟（需外网访问 B 站接口）
 node tests/client.mjs   # 客户端 DOM stub 测试
+node tests/mse.mjs      # MSE 播放器单测（ISO-BMFF 解析 + 装配/回退）
 ```
