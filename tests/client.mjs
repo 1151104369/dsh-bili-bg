@@ -283,6 +283,13 @@ ok('account area built', !!account)
 ok('account shows QR login when logged out', !!findByClass(document.body, 'dsbili-account-login'))
 ok('feed source button present', !!findByText(document.body, '首页推荐'))
 
+// 来源按钮顺序：首页推荐 → 热门 → 排行榜
+const sourceRow = panelKids.find((c) => (c.children || []).some((x) => x.textContent === '首页推荐'))
+if (sourceRow) {
+  const order = sourceRow.children.map((b) => b.textContent)
+  ok('source order: feed before popular', order.indexOf('首页推荐') < order.indexOf('热门'), order)
+}
+
 // 点“二维码登录”→ 显示二维码 + 状态
 if (api.auth && api.auth.startQr) api.auth.startQr()
 await new Promise((r) => setTimeout(r, 60))

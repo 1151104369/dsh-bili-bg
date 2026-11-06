@@ -1498,9 +1498,9 @@
       loadQueue()
       persist()
     })
+    row4.appendChild(srcFeed)
     row4.appendChild(srcPopular)
     row4.appendChild(srcRanking)
-    row4.appendChild(srcFeed)
 
     // 音量
     var volRow = el('div', 'dsbili-row')
