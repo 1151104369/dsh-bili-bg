@@ -50,6 +50,18 @@ function box(type, payload) {
   out.set(payload, 8)
   return out
 }
+/** 16 字节头的大 box（size==1 + 64 位 largesize），用于验证 initEndOf 的头长度分支。 */
+function boxLarge(type, payload) {
+  const typeB = ascii(type)
+  const out = new Uint8Array(16 + payload.length)
+  out.set(be32n(1), 0)
+  out.set(typeB, 4)
+  const size = 16 + payload.length
+  out[8] = (size / 4294967296) | 0
+  out.set(be32n(size >>> 0), 12)
+  out.set(payload, 16)
+  return out
+}
 function join(...arrays) {
   let total = 0
   for (const a of arrays) total += a.length
@@ -116,6 +128,17 @@ ok('exposes parse helpers', !!(dash._boxHeaderAt && dash._initEndOf && dash._med
   ok('initEndOf = whole init for ftyp+moov', end === init.length, end)
 }
 
+// initEndOf：moov 用 16 字节头（size==1 + largesize）时也不能算错（早前公式差 8）
+{
+  const ftyp = box('ftyp', ascii('isom'))
+  const moov = boxLarge('moov', box('trak', box('mdia', mdhd(40000))))
+  const init = join(ftyp, moov)
+  ok('initEndOf handles 16-byte box header', dash._initEndOf(init) === ftyp.length + moov.length, {
+    got: dash._initEndOf(init),
+    want: ftyp.length + moov.length,
+  })
+}
+
 // mediaTimescaleOf：mdhd 里写 40000
 {
   const init = join(box('ftyp', ascii('isom')), box('moov', box('trak', box('mdia', mdhd(40000)))))
@@ -141,6 +164,58 @@ ok('exposes parse helpers', !!(dash._boxHeaderAt && dash._initEndOf && dash._med
   ok('scanner produced 2 moof entries', entries.length === 2, entries.length)
   ok('scanner absolute offset base', entries.length >= 2 && entries[0].off === 4096 && entries[1].off === 4096 + m1.length + mdat.length, entries)
   ok('scanner seconds from timescale', entries.length >= 1 && Math.abs(entries[0].t - 20) < 1e-6, entries[0] && entries[0].t)
+}
+
+// 流扫描器：mdat 远大于单次读块（真实视频 mdat ≈ 1.1MB，读块 64KB）时，
+// 必须跨 feed 正确跳过、并继续索引后续 moof（早前只索引到第一个 moof 的回归）。
+{
+  const ts = 16000
+  const moof1 = moofWithDecode(ts * 0) // 0s
+  const bigMdat = box('mdat', new Uint8Array(1178268).fill(7)) // 真实视频 mdat 量级
+  const moof2 = moofWithDecode(ts * 30) // 30s
+  const smallMdat = box('mdat', new Uint8Array(2000).fill(3))
+  const stream = join(moof1, bigMdat, moof2, smallMdat)
+  const entries = []
+  const scanner = dash._makeScanner(ts, (off, t) => entries.push({ off, t }), 930)
+  for (let p = 0; p < stream.length; p += 65536) {
+    scanner.feed(stream.subarray(p, Math.min(p + 65536, stream.length)))
+  }
+  ok('scanner indexes moof across feed boundary', entries.length === 2, entries.length)
+  ok(
+    'scanner absolute offsets correct after huge mdat',
+    entries.length >= 2 && entries[0].off === 930 && entries[1].off === 930 + moof1.length + bigMdat.length,
+    entries,
+  )
+  ok('scanner times correct after huge mdat', entries.length >= 2 && Math.abs(entries[1].t - 30) < 1e-6, entries[1] && entries[1].t)
+  ok('scanner consumed tracks whole stream', scanner.consumed === 930 + stream.length, { consumed: scanner.consumed, want: 930 + stream.length })
+}
+
+// moof 边界探测：硬 seek 后按估算偏移回填时，要在字节里找到「<= target 的最近一个 moof」，
+// 并且不能被 mdat payload 里偶然出现的 'moof' 字样骗到。
+{
+  const ts = 16000
+  const moofA = moofWithDecode(ts * 10) // 10s
+  const moofB = moofWithDecode(ts * 20) // 20s
+  const moofC = moofWithDecode(ts * 30) // 30s
+  // mdat 里塞一段假 'moof'（前面 4 字节是个不合理尺寸，应被过滤）
+  const fake = new Uint8Array(64).fill(1)
+  fake.set(ascii('moof'), 20)
+  const fakeMdat = box('mdat', fake)
+  const bigMdat = box('mdat', new Uint8Array(1000).fill(7))
+  const payload = join(bigMdat, moofA, fakeMdat, moofB, moofC)
+  const base = 5000
+  const bytes = new Uint8Array(payload.length)
+  bytes.set(payload, 0)
+  const moofBOff = bigMdat.length + moofA.length + fakeMdat.length
+  const pick25 = dash._findMoofBoundary(bytes, base, ts, 25) // 应选 B(20s)
+  ok('findMoofBoundary picks nearest <= target', !!pick25 && Math.abs(pick25.t - 20) < 1e-6, pick25)
+  ok('findMoofBoundary offset is real moof start (B)', !!pick25 && pick25.off === base + moofBOff, {
+    got: pick25 && pick25.off,
+    want: base + moofBOff,
+  })
+  const pick5 = dash._findMoofBoundary(bytes, base, ts, 5) // 没有 <=5 的 → 返回第一个
+  ok('findMoofBoundary falls back to first when none <= target', !!pick5 && Math.abs(pick5.t - 10) < 1e-6, pick5)
+  ok('findMoofBoundary ignores fake mdat moof marker', !!pick25 && pick25.t !== 0)
 }
 
 // ─────────────────────── 播放器装配 / 回退 ───────────────────────

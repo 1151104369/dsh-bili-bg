@@ -47,6 +47,16 @@
     return v
   }
 
+  /** 4 字节 box 类型是否都是可打印 ASCII（用于流错位时重新同步）。 */
+  function isBoxType(type) {
+    if (typeof type !== 'string' || type.length !== 4) return false
+    for (var i = 0; i < 4; i += 1) {
+      var c = type.charCodeAt(i)
+      if (c < 0x20 || c > 0x7e) return false
+    }
+    return true
+  }
+
   // ────────────────────────────── ISO BMFF 只读解析 ──────────────────────────────
 
   /**
@@ -96,9 +106,10 @@
    */
   function initEndOf(bytes) {
     var end = 0
-    walkBoxes(bytes, 0, bytes.length, function (h) {
+    walkBoxes(bytes, 0, bytes.length, function (h, off) {
       if (h.type === 'moov') {
-        end = h.contentOffset - 8 + ((h.header === 16 ? 16 : 8)) + (h.size - h.header)
+        // 用 box 的起始偏移 + size，对 8/16 字节头都成立（早先公式在 16 字节头时差 8）。
+        end = off + h.size
         return false
       }
     })
@@ -167,110 +178,166 @@
     return found
   }
 
+  /**
+   * 从一段字节里找 moof box 的起始偏移（绝对偏移 = baseOffset + boxStart），
+   * 挑**解码时间 <= target 的最近一个**；一个合适的都没有就返回第一个找到的 moof。
+   * 用于硬 seek 后按估算偏移回填时，把起点修正到真正的 fragment 边界。
+   * @returns {{off:number,t:number}|null}
+   */
+  function findMoofBoundary(bytes, baseOffset, timescale, target) {
+    var best = null
+    var first = null
+    for (var p = 0; p + 8 <= bytes.length; p += 1) {
+      if (bytes[p] !== 0x6d || bytes[p + 1] !== 0x6f || bytes[p + 2] !== 0x6f || bytes[p + 3] !== 0x66) continue
+      var boxStart = p - 4
+      if (boxStart < 0) continue
+      var size = be32(bytes, boxStart)
+      if (size < 16 || size > 16 * 1024 * 1024) continue
+      if (boxStart + size > bytes.length) continue
+      var dt
+      try {
+        dt = moofDecodeTime(bytes.subarray(boxStart, boxStart + size))
+      } catch (e) {
+        continue
+      }
+      if (dt === null) continue
+      var t = dt / timescale
+      if (first === null) first = { off: baseOffset + boxStart, t: t }
+      if (t <= target + 0.5 && (!best || t > best.t)) best = { off: baseOffset + boxStart, t: t }
+      if (t > target + 0.5 && best) break
+    }
+    return best || first
+  }
+
   // ────────────────────────────── 流扫描器 ──────────────────────────────
   //
   // 一边读一边把完整 box 从字节流里剥出来：moof（小）留着解析 tfdt 建索引；
   // 其它 box（mdat 等，可能很大）只消费 size，不缓存内容。这样内存有界。
+  //
+  // **关键：mdat 常比一次读进来的块大得多**（真实数据里视频 mdat ≈ 1.1MB，而流式
+  // 读块通常 64KB）。所以「当前正在跳过的大 box 还剩多少字节」必须跨 feed 保持，
+  // 否则会把 mdat 中段当成 box 头去解析、越读越乱（早先只索引到第一个 moof 就是这个 bug）。
+  //
+  // 偏移记账：head = buf[0] 在整个文件里的绝对偏移；任意字节的绝对偏移 = head + i。
+  // 只有「丢弃已消费前缀」时才推进 head，读数/跳过大 box 都只动 i 和 skip。
 
   function makeScanner(timescale, onMoof, baseOffset) {
-    var buf = null // 尚未"消费掉"的字节（内部数组，头部可能已读过）
-    var len = 0
-    var pos = 0 // 当前读指针（相对 buf 起点）
-    // consumed = buf[0] 在整个文件里的绝对偏移。因此 buf 里任意位置的绝对偏移 = consumed + 下标。
-    // baseOffset 起拉流时第一条被读字节就落在 baseOffset。
-    var consumed = Number(baseOffset) || 0
+    var buf = new Uint8Array(0)
+    var i = 0 // 读指针（相对 buf 起点）
+    var head = Number(baseOffset) || 0 // buf[0] 的绝对偏移
+    var skip = 0 // 当前非 moof box 还剩余多少 payload 字节要丢弃
+    var MAX_MOOF = 16 * 1024 * 1024 // 单条 moof 上限，超过视为数据损坏、重新同步
 
-    function ensure(n) {
-      if (n <= 0) return true
-      if (pos + n > len) return false
-      return true
+    /** 丢掉 buf 里 [0, i) 已消费的前缀，推进 head。 */
+    function trim() {
+      if (i <= 0) return
+      head += i
+      buf = buf.subarray(i)
+      i = 0
     }
-    function peek(off) {
-      return buf[pos + off]
-    }
-    // 把已读过的头部（前 pos 字节）从内部缓冲里丢弃，并同步推进 consumed。
-    function compact() {
-      if (pos <= 0) return
-      consumed += pos
-      if (pos >= len) {
-        buf = null
-        len = 0
-        pos = 0
-        return
-      }
-      var tail = buf.slice(pos, len)
-      buf = tail
-      len = tail.length
-      pos = 0
+
+    function feed(chunk) {
+      var c = u8(chunk)
+      if (c.length === 0) return
+      trim()
+      var next = new Uint8Array(buf.length + c.length)
+      next.set(buf, 0)
+      next.set(c, buf.length)
+      buf = next
+      process()
     }
 
     function process() {
       for (;;) {
-        if (len - pos < 8) return
-        var size = ((buf[pos] << 24) >>> 0) + ((buf[pos + 1] << 16) >>> 0) + ((buf[pos + 2] << 8) >>> 0) + buf[pos + 3]
-        var type = String.fromCharCode(buf[pos + 4], buf[pos + 5], buf[pos + 6], buf[pos + 7])
+        // ① 正在跳过大 box 的 payload：吃多少算多少，吃完再继续解析
+        if (skip > 0) {
+          var avail = buf.length - i
+          if (avail <= 0) {
+            trim()
+            return
+          }
+          var take = skip < avail ? skip : avail
+          i += take
+          skip -= take
+          if (skip > 0) {
+            // 还没跳完，等下一块；此时把已消费前缀丢掉即可（head 前进，内存不涨）
+            trim()
+            return
+          }
+          trim()
+          continue
+        }
+
+        // ② 需要完整的 box 头
+        if (buf.length - i < 8) {
+          trim()
+          return
+        }
+        var size = ((buf[i] << 24) >>> 0) + ((buf[i + 1] << 16) >>> 0) + ((buf[i + 2] << 8) >>> 0) + buf[i + 3]
+        var type = String.fromCharCode(buf[i + 4], buf[i + 5], buf[i + 6], buf[i + 7])
+        // box 类型必须是 4 个可打印 ASCII；否则说明我们落在某个大 box 的 payload 里
+        // （典型：硬 seek 后按估算偏移回填、起点不在 moof 边界）。逐字节滑到下一个
+        // 像样的 box 头，重新同步——宁可慢一点，也别把 mdat 内容当索引。
+        if (!isBoxType(type)) {
+          i += 1
+          trim()
+          continue
+        }
         var header = 8
         if (size === 1) {
-          if (len - pos < 16) return
+          if (buf.length - i < 16) {
+            trim()
+            return
+          }
           header = 16
-          size = be64(buf, pos + 8)
+          size = be64(buf, i + 8)
         } else if (size === 0) {
-          size = len - pos
+          // 尺寸 0 = 延伸到文件尾。fMP4 分片里不应出现；按头长度处理避免死循环。
+          size = header
         }
-        if (size <= 0) return
+        if (size < header) {
+          // 头非法：跳 8 字节重新同步（不要让流卡死）
+          i += 8
+          trim()
+          continue
+        }
+
         if (type === 'moof') {
-          if (len - pos < size) return // 等完整的 moof
-          var entryOff = consumed + pos
-          var moofBytes = buf.slice(pos, pos + size)
+          if (size > MAX_MOOF) {
+            // 明显不是真 moof：跳过这个头重新找
+            i += header
+            trim()
+            continue
+          }
+          if (buf.length - i < size) {
+            trim() // 等完整 moof
+            return
+          }
+          var entryOff = head + i
+          var moofBytes = buf.subarray(i, i + size)
           try {
             var dt = moofDecodeTime(moofBytes)
             if (dt !== null && onMoof) onMoof(entryOff, dt / timescale)
           } catch (e) {
             /* 解析失败忽略，不影响播放 */
           }
-          pos += size
-          if (pos > 262144) compact() // 防无限膨胀
-        } else {
-          // 非 moof：只需要 size（跳过内容，不缓存 mdat 这类大 box）
-          if (len - pos < header) return
-          // 跳过的内容可能远超已缓冲量，逐段推进到尾部即可（不会缓存 mdat 内容）
-          var need = len - pos
-          if (size < need) need = size
-          pos += need
-          if (pos > 262144) compact()
+          i += size
+          trim()
+          continue
         }
+
+        // ③ 非 moof：消费头，把 payload 交给 skip 跨块丢弃（不缓存）
+        i += header
+        skip = size - header
+        trim()
+        continue
       }
     }
 
     return {
-      feed: function (chunk) {
-        var c = u8(chunk)
-        if (c.length === 0) return
-        if (pos > 0) {
-          // 把未消费的尾巴挪到起点，并把它在流里的绝对偏移并入 consumed
-          consumed += pos
-          var tail = buf.slice(pos, len)
-          buf = tail
-          len = tail.length
-          pos = 0
-        }
-        if (!buf) {
-          buf = new Uint8Array(c.length)
-          buf.set(c)
-          len = c.length
-          pos = 0
-        } else {
-          var next = new Uint8Array(len + c.length)
-          next.set(buf, 0)
-          next.set(c, len)
-          buf = next
-          len = next.length
-          pos = 0
-        }
-        process()
-      },
+      feed: feed,
       get consumed() {
-        return consumed + pos
+        return head + i
       },
     }
   }
@@ -540,11 +607,42 @@
     // ── 分轨：取 init → 建索引 → 流式 append ──
     var PROBE = 1 << 20 // 1 MiB 探针
 
+    /**
+     * 带超时的 fetch。**只等响应头**，不等整个 body——所以对「拉 init 探针」和
+     * 「开始拉媒体流」都能兜住「请求永远不返回」的情况（例如 CORS 预检卡死时
+     * fetch 会一直 pending；没有超时就会永远停在“高清播放中”却没有任何画面）。
+     */
+    function fetchOnce(url, init, timeoutMs) {
+      if (!fetchFn) return Promise.reject(new Error('fetch 不可用'))
+      var ms = Number(timeoutMs) || 20000
+      return new Promise(function (resolve, reject) {
+        var settled = false
+        var timer = global.setTimeout(function () {
+          if (settled) return
+          settled = true
+          reject(new Error('请求超时（' + Math.round(ms / 1000) + 's）'))
+        }, ms)
+        function done(fn) {
+          return function (value) {
+            if (settled) return
+            settled = true
+            try {
+              global.clearTimeout(timer)
+            } catch (e) {
+              /* ignore */
+            }
+            fn(value)
+          }
+        }
+        Promise.resolve(fetchFn(url, init)).then(done(resolve), done(reject))
+      })
+    }
+
     function fetchRange(url, start, end) {
       if (!fetchFn) return Promise.reject(new Error('fetch 不可用'))
       var r = 'bytes=' + (start >= 0 ? start : 0) + '-'
       if (end !== undefined && end >= 0) r += end
-      return fetchFn(url, { cache: 'no-store', headers: { Range: r } }).then(function (res) {
+      return fetchOnce(url, { cache: 'no-store', headers: { Range: r } }).then(function (res) {
         if (!res || !res.ok) throw new Error('http ' + (res && res.status))
         var buf = res.arrayBuffer ? res.arrayBuffer() : Promise.resolve(res)
         return buf
@@ -589,7 +687,7 @@
     function startTrackFetch(ts, fromOffset) {
       if (destroyed || ts.fetchActive) return
       ts.fetchActive = true
-      return fetchFn(ts.spec.media, {
+      return fetchOnce(ts.spec.media, {
         cache: 'no-store',
         headers: { Range: 'bytes=' + fromOffset + '-' },
       })
@@ -609,13 +707,37 @@
             if (destroyed) return
             ts.totalBytes = fromOffset + ab.byteLength
             feedChunk(ts, u8(ab))
-            return whenAppendsSettled(ts)
+            ts.readDone = true
+            return whenAppendsSettled(ts).then(function () {
+              maybeEndOfStream()
+            })
           })
         })
         .catch(function (e) {
           if (destroyed) return
           fail('分轨下载失败：' + msgOf(e))
         })
+    }
+
+    /** 两条轨都读到文件尾、且 append 都排空后，告诉 MediaSource 结束——这样才会触发 ended/轮播。 */
+    function maybeEndOfStream() {
+      if (destroyed) return
+      var pending = []
+      for (var i = 0; i < order.length; i += 1) {
+        var ts = state[order[i]]
+        if (!ts) continue
+        if (!ts.readDone) return
+        pending.push(whenAppendsSettled(ts))
+      }
+      if (!pending.length) return
+      Promise.all(pending).then(function () {
+        if (destroyed) return
+        try {
+          if (mediaSource && mediaSource.readyState === 'open') mediaSource.endOfStream()
+        } catch (e) {
+          /* ignore */
+        }
+      })
     }
 
     function pumpReader(ts) {
@@ -626,6 +748,8 @@
             if (destroyed || !ts.reader) return
             if (r.done) {
               ts.reader = null
+              ts.readDone = true
+              whenAppendsSettled(ts).then(maybeEndOfStream)
               return
             }
             feedChunk(ts, u8(r.value))
@@ -660,6 +784,12 @@
         return
       }
       setStatus('starting', '连接 MediaSource…')
+      // 初始化看门狗：MediaSource/fetch 任意一步卡住（预检挂死、端口不通而不报错等）
+      // 都要在限定时间内转成失败，从而让上层回退 720p；绝不能停在“高清播放中”没画面。
+      var watchdog = global.setTimeout(function () {
+        if (!destroyed && !loadSettled) fail('高清初始化超时（没能在 20 秒内开始缓冲）')
+      }, 20000)
+      var loadSettled = false
       attachMediaSource()
         .then(function () {
           if (destroyed) return
@@ -673,6 +803,12 @@
           }
           return Promise.all(inits).then(function () {
             if (destroyed) return
+            loadSettled = true
+            try {
+              global.clearTimeout(watchdog)
+            } catch (e) {
+              /* ignore */
+            }
             try {
               mediaSource.duration = duration > 0 ? duration : NaN
             } catch (e) {
@@ -690,6 +826,12 @@
           })
         })
         .catch(function (e) {
+          loadSettled = true
+          try {
+            global.clearTimeout(watchdog)
+          } catch (e2) {
+            /* ignore */
+          }
           if (!destroyed) fail('MSE 初始化失败：' + msgOf(e))
         })
     }
@@ -733,18 +875,22 @@
       if (a) restartTrack(a, target)
     }
 
-    /** 目标时间之前最近的已建分片偏移；没有则按总字节占比估算（能落在大致位置）。 */
+    /**
+     * 目标时间之前最近的已建分片偏移；有精确 moof 索引就返回 exact=true，
+     * 否则按总字节占比估算（exact=false，调用方会再探 moof 边界修正）。
+     */
     function refillOffset(ts, target) {
       var best = null
       for (var i = 0; i < ts.segIndex.length; i += 1) {
         var e = ts.segIndex[i]
         if (e.t <= target && (!best || e.t > best.t)) best = e
       }
-      if (best) return best.off
+      if (best) return { offset: best.off, exact: true }
       if (duration > 0 && ts.totalBytes > 0) {
-        return Math.max(ts.initEnd, Math.floor((target / duration) * ts.totalBytes))
+        var est = Math.max(ts.initEnd, Math.floor((target / duration) * ts.totalBytes))
+        return { offset: est, exact: false }
       }
-      return ts.initEnd
+      return { offset: ts.initEnd, exact: false }
     }
 
     /**
@@ -753,7 +899,7 @@
      */
     function restartTrack(ts, target) {
       if (!ts) return
-      var offset = refillOffset(ts, target)
+      var refill = refillOffset(ts, target)
       var hadBuffered = isFinite(bufferedEnd(ts)) && bufferedEnd(ts) > 0
       // 停旧下载 / 清 pending append
       if (ts.reader) {
@@ -767,6 +913,7 @@
       ts.fetchActive = false
       ts.appendQueue = []
       ts.drainResolvers = []
+      ts.readDone = false
       // 对称 flush
       if (hadBuffered) {
         try {
@@ -775,14 +922,53 @@
           hadBuffered = false
         }
       }
-      // 先重放 init，再接 flush 收尾后从 offset 拉媒体
+      // 先重放 init，再接 flush 收尾后从回填点拉媒体
       if (ts.initBytes) enqueueAppend(ts, ts.initBytes)
       var gate = hadBuffered ? waitDrain(ts) : whenAppendsSettled(ts)
       gate.then(function () {
         if (destroyed) return
-        resetScanner(ts, offset)
-        startTrackFetch(ts, offset)
+        if (refill.exact) {
+          resetScanner(ts, refill.offset)
+          startTrackFetch(ts, refill.offset)
+          return
+        }
+        // 只有估算偏移：先探一小段、在真实字节里找最近的 moof 边界，避免落在 mdat 中间
+        // 导致 append 出坏数据。找不到就退回估算值，至少不崩。
+        probeMoofBoundary(ts, refill.offset, target)
+          .then(function (offset) {
+            if (destroyed) return
+            resetScanner(ts, offset)
+            startTrackFetch(ts, offset)
+          })
+          .catch(function () {
+            if (destroyed) return
+            resetScanner(ts, refill.offset)
+            startTrackFetch(ts, refill.offset)
+          })
       })
+    }
+
+    /**
+     * 从估算偏移拉一小段，在字节里搜 'moof' 并解析其 tfdt，挑**时间 <= target 的最近一个**
+     * 的 box 起点作为真正回填点；一个都没有就返回第一个找到的 moof。
+     */
+    function probeMoofBoundary(ts, estimate, target) {
+      var PROBE_BYTES = 512 * 1024
+      var start = Math.max(ts.initEnd, estimate)
+      return fetchOnce(ts.spec.media, {
+        cache: 'no-store',
+        headers: { Range: 'bytes=' + start + '-' + (start + PROBE_BYTES - 1) },
+      })
+        .then(function (res) {
+          if (!res || !res.ok) throw new Error('probe http ' + (res && res.status))
+          return res.arrayBuffer ? res.arrayBuffer() : res
+        })
+        .then(function (ab) {
+          var bytes = u8(ab)
+          var pick = findMoofBoundary(bytes, start, ts.timescale, target)
+          if (!pick) throw new Error('probe 未找到 moof 边界')
+          return pick.off
+        })
     }
 
     function applyPendingSeek() {
@@ -888,5 +1074,6 @@
     _mediaTimescaleOf: mediaTimescaleOf,
     _moofDecodeTime: moofDecodeTime,
     _makeScanner: makeScanner,
+    _findMoofBoundary: findMoofBoundary,
   }
 })(typeof window !== 'undefined' ? window : globalThis)

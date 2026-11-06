@@ -336,8 +336,64 @@ ok('media-range', mediaRes.status === 206 && !!mediaRes.headers.get('content-ran
   status: mediaRes.status,
   range: mediaRes.headers.get('content-range'),
 })
+// 媒体响应必须带 ACAO（MSE 从页面直连 127.0.0.1 跨源读 body）。
+ok('media response exposes ACAO', mediaRes.headers.get('access-control-allow-origin') === '*', {
+  acao: mediaRes.headers.get('access-control-allow-origin'),
+})
 try {
   await mediaRes.body?.cancel?.()
+} catch {
+  /* ignored */
+}
+
+// CORS 预检回归：MSE 从页面直连 127.0.0.1 拉 DASH 分轨时会先发 OPTIONS（带 Range 触发）。
+// 处理器必须**立刻**答 204 + CORS 头；绝不能当成媒体 GET 去上游拉整条 m4s（会永久挂住，
+// 浏览器 fetch 永不 resolve ⇒ 表现「提示高清播放中但画面永远不出来」）。
+const preflight = await fetch(base + '/dsh-bili/media?bvid=BV1GJ411x7h7&cid=137649199&kind=video&idx=0&qn=80', {
+  method: 'OPTIONS',
+  headers: {
+    Origin: 'dsh-app://x',
+    'Access-Control-Request-Method': 'GET',
+    'Access-Control-Request-Headers': 'range',
+  },
+})
+ok('media preflight returns 204', preflight.status === 204, { status: preflight.status })
+ok(
+  'media preflight allows CORS + Range',
+  preflight.headers.get('access-control-allow-origin') === '*' &&
+    String(preflight.headers.get('access-control-allow-headers') || '')
+      .toLowerCase()
+      .indexOf('range') !== -1 &&
+    String(preflight.headers.get('access-control-allow-methods') || '').indexOf('GET') !== -1,
+  {
+    origin: preflight.headers.get('access-control-allow-origin'),
+    headers: preflight.headers.get('access-control-allow-headers'),
+    methods: preflight.headers.get('access-control-allow-methods'),
+  },
+)
+ok('media preflight has empty body', (await preflight.text()).length === 0)
+// 预检必须很快返回（衡量是否误走媒体代理导致挂住）；本地 204 应远低于 2s。
+const pfStart = Date.now()
+await fetch(base + '/dsh-bili/media?bvid=BV1GJ411x7h7&cid=137649199&kind=video&idx=0&qn=80', {
+  method: 'OPTIONS',
+  headers: { Origin: 'dsh-app://x', 'Access-Control-Request-Method': 'GET', 'Access-Control-Request-Headers': 'range' },
+})
+ok('media preflight is fast (not proxied)', Date.now() - pfStart < 2000, { ms: Date.now() - pfStart })
+// 真实 GET 仍必须带 ACAO（否则跨源读 body 也会被拦）。注意：临时 home 没有登录 Cookie，
+// DASH 分轨可能拿不到而回 502；这里只在成功 206 时校验响应头（CORS 头由统一头逻辑给出）。
+const dashMedia = await fetch(base + '/dsh-bili/media?bvid=BV1GJ411x7h7&cid=137649199&kind=video&idx=0&qn=80', {
+  headers: { Range: 'bytes=0-1023' },
+})
+if (dashMedia.status === 206) {
+  ok('dash media GET exposes ACAO for MSE fetch', dashMedia.headers.get('access-control-allow-origin') === '*', {
+    status: dashMedia.status,
+    acao: dashMedia.headers.get('access-control-allow-origin'),
+  })
+} else {
+  console.log('SKIP dash media GET ACAO（未登录/无分轨）:', dashMedia.status)
+}
+try {
+  await dashMedia.body?.cancel?.()
 } catch {
   /* ignored */
 }

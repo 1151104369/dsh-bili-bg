@@ -47,7 +47,7 @@ export const name = 'dsh-bili-bg'
 export const inject = []
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.3.0'
+export const VERSION = '0.3.1'
 
 const CONFIG_ROUTE = `${ROUTE_PREFIX}/config.json`
 const PLAY_ROUTE = `${ROUTE_PREFIX}/play`
@@ -306,6 +306,25 @@ export function apply(ctx) {
           kind: 'exact',
           path: MEDIA_ROUTE,
           handler: (req, res) => {
+            // CORS 预检：MSE 用 fetch 从页面直连 127.0.0.1 拉分轨（跨源），且带了 Range
+            // 这个非「简单请求」头，浏览器一定先发 OPTIONS。**必须在这里直接答，绝不能
+            // 当成媒体 GET 去代理**——否则会去上游拉整条 m4s（可达 2GB+）并一直挂着，
+            // 浏览器的 fetch 永远不 resolve，表现就是「提示高清播放中但画面永远不出来」。
+            if (String(req.method ?? '').toUpperCase() === 'OPTIONS') {
+              try {
+                res.writeHead(204, {
+                  'Access-Control-Allow-Origin': '*',
+                  'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+                  'Access-Control-Allow-Headers': 'Range, Content-Type, If-Range',
+                  'Access-Control-Max-Age': '600',
+                  'Content-Length': '0',
+                })
+                res.end()
+              } catch {
+                /* connection gone */
+              }
+              return
+            }
             const url = parseUrl(req)
             const bvid = url.searchParams.get('bvid') || ''
             const cid = url.searchParams.get('cid') || ''

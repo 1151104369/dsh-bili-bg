@@ -28,6 +28,7 @@ function makeNode(tag) {
     muted: false,
     paused: true,
     volume: 1,
+    currentTime: 0,
     loop: false,
     src: '',
     playsInline: false,
@@ -494,8 +495,16 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
     else if (u.includes('/state')) {
       payload = opts && opts.method === 'POST' ? { ok: true } : { ok: true, state: {} }
     }
-    // 高清请求：返回 DASH 分轨
+    // 高清请求：返回 DASH 分轨（照真实 B 站：每个清晰度有 avc1/hvc1/av01 三条 → 共 12 条）
     else if (u.includes('/play') && u.includes('hd=1')) {
+      const mk = (index, id, height, codecs) => ({
+        index,
+        id,
+        height,
+        codecs,
+        mimeType: 'video/mp4',
+        media: `/dsh-bili/media?bvid=BV1HDTEST&cid=1&kind=video&idx=${index}&qn=80`,
+      })
       payload = {
         ok: true,
         hd: true,
@@ -508,11 +517,22 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
         src: '/dsh-bili/media?bvid=BV1HDTEST&cid=1',
         mediaBase: 'http://127.0.0.1:55999',
         videoTracks: [
-          { index: 0, id: 80, height: 1080, codecs: 'avc1.640028', mimeType: 'video/mp4', media: '/dsh-bili/media?bvid=BV1HDTEST&cid=1&kind=video&idx=0&qn=80' },
-          { index: 1, id: 64, height: 720, codecs: 'avc1.64001f', mimeType: 'video/mp4', media: '/dsh-bili/media?bvid=BV1HDTEST&cid=1&kind=video&idx=1&qn=80' },
+          mk(0, 80, 1080, 'avc1.640033'),
+          mk(1, 80, 1080, 'hvc1.1.6.L150.90'),
+          mk(2, 80, 1080, 'av01.0.08M.08'),
+          mk(3, 64, 720, 'avc1.640033'),
+          mk(4, 64, 720, 'hvc1.1.6.L120.90'),
+          mk(5, 64, 720, 'av01.0.08M.08'),
+          mk(6, 32, 480, 'avc1.640033'),
+          mk(7, 32, 480, 'hvc1.1.6.L120.90'),
+          mk(8, 32, 480, 'av01.0.08M.08'),
+          mk(9, 16, 360, 'hvc1.1.6.L120.90'),
+          mk(10, 16, 360, 'avc1.640033'),
+          mk(11, 16, 360, 'av01.0.08M.08'),
         ],
         audioTracks: [
-          { index: 0, id: 30280, codecs: 'mp4a.40.2', mimeType: 'audio/mp4', media: '/dsh-bili/media?bvid=BV1HDTEST&cid=1&kind=audio&idx=0&qn=80' },
+          { index: 0, id: 30232, codecs: 'mp4a.40.2', mimeType: 'audio/mp4', media: '/dsh-bili/media?bvid=BV1HDTEST&cid=1&kind=audio&idx=0&qn=80' },
+          { index: 1, id: 30280, codecs: 'mp4a.40.2', mimeType: 'audio/mp4', media: '/dsh-bili/media?bvid=BV1HDTEST&cid=1&kind=audio&idx=1&qn=80' },
         ],
         dash: { defaultVideoIndex: 0, defaultAudioIndex: 0 },
       }
@@ -556,6 +576,9 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
   hdApi.play('BV1HDTEST')
   await new Promise((r) => setTimeout(r, 60))
   ok('base play loaded a current video', !!hdApi.state.current && hdApi.state.current.bvid === 'BV1HDTEST')
+  // 保位置：先定位到 42s，再开高清，应该从 42s 继续而不是回到 0。
+  const hdBaseVideo = findById(hdDoc.body, 'dsbili-video')
+  if (hdBaseVideo) hdBaseVideo.currentTime = 42
   // 打开高清 → 重新解析 hd=1 → startDash → MSE ready → hdEffective
   playerCalls.length = 0
   hdApi.hd()
@@ -570,14 +593,18 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
     ),
     playerCalls.length ? playerCalls[0].tracks && playerCalls[0].tracks.video.media : '',
   )
-  // 分轨清晰度按钮已渲染（1080P 与 720P 两条）
+  // 切高清保住进度：MSE ready 后应 seek 回到 42s
+  ok('hd switch preserves playback position (seek 42)', playerCalls.some((c) => c.kind === 'seek' && Number(c.t) === 42), playerCalls)
+  // 去重后的清晰度按钮：12 条原始分轨(4 高度 × 3 编码) → 4 个按钮，且默认选中 1080P(avc1 idx0)
   const btnsOfWrap = []
   ;(function collect(elNode) {
     if (!elNode) return
     if (String(elNode.className || '').indexOf('dsbili-hd-btn') !== -1 && elNode !== hdBtnEl) btnsOfWrap.push(elNode)
     for (const c of elNode.children || []) collect(c)
   })(hdDoc.body)
-  ok('quality buttons rendered (1080P + 720P)', btnsOfWrap.length === 2, btnsOfWrap.length)
+  ok('quality buttons deduped to one per height (4)', btnsOfWrap.length === 4, btnsOfWrap.map((b) => b.textContent))
+  ok('deduped quality buttons ordered high→low', btnsOfWrap.map((b) => b.textContent).join(',') === '1080P,720P,480P,360P', btnsOfWrap.map((b) => b.textContent))
+  ok('default quality is 1080P (idx 0)', btnsOfWrap[0] && btnsOfWrap[0].getAttribute('data-on') === '1', btnsOfWrap[0] && btnsOfWrap[0].getAttribute('data-on'))
   // 关闭高清 → 立即回 720p 单文件，不白屏
   playerCalls.length = 0
   hdApi.hd()
