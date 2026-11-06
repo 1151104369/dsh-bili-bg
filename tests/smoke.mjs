@@ -16,6 +16,7 @@ process.env.DSH_HOME = TMP_HOME
 
 const { apply, VERSION } = await import('../index.js')
 const { qrPng, qrMatrix } = await import('../lib/qr.js')
+const { parsePoll } = await import('../lib/auth.js')
 
 const routes = new Map()
 const handlers = {}
@@ -139,6 +140,19 @@ ok(
   !!(cfg.auth && cfg.auth.create && cfg.auth.image && cfg.auth.poll && cfg.auth.status && cfg.auth.logout),
   cfg.auth,
 )
+
+// ② poll 状态解析回归：新版接口状态在 data.code（顶层 code 恒为 0），绝不能误判为"登录成功"
+const pollWait = parsePoll({ code: 0, message: 'OK', data: { url: '', refresh_token: '', timestamp: 0, code: 86101, message: '未扫码' } }, {})
+ok('poll wait from data.code (new api)', pollWait.status === 'wait', pollWait.status)
+ok('poll scanned', parsePoll({ code: 0, data: { code: 86090 } }, {}).status === 'scanned')
+ok('poll expired', parsePoll({ code: 0, data: { code: 86038 } }, {}).status === 'expired')
+ok('poll wait from top-level (old api)', parsePoll({ code: 86101, message: '未扫码' }, {}).status === 'wait')
+const pollOk = parsePoll(
+  { code: 0, data: { code: 0, url: 'https://x/', message: '' } },
+  { 'set-cookie': ['SESSDATA=abc123; Path=/', 'bili_jct=def456; Path=/'] },
+)
+ok('poll ok status', pollOk.status === 'ok' && pollOk.url === 'https://x/')
+ok('poll ok captures set-cookie', pollOk.setCookie.some((c) => c.name === 'SESSDATA' && c.value === 'abc123'), pollOk.setCookie)
 
 // ② 未登录时“首页推荐”应优雅返回 needAuth（不发网络请求，不报错崩）
 const feedOut = await (await fetch(base + '/dsh-bili/queue?source=feed&count=5')).json()

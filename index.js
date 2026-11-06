@@ -27,6 +27,7 @@ import {
   generateQr,
   pollQr,
   confirmLogin,
+  ensureNav,
   getLoginStatus,
   logout,
   buildCookieHeader,
@@ -473,7 +474,10 @@ export function apply(ctx) {
               if (result.status === 'ok') {
                 const pending = pendingQrs.get(key)
                 pendingQrs.delete(key)
-                const confirmed = await confirmLogin(homeDir, result.url || (pending && pending.url) || '')
+                const confirmed = await confirmLogin(homeDir, {
+                  url: result.url || (pending && pending.url) || '',
+                  setCookie: Array.isArray(result.setCookie) ? result.setCookie : [],
+                })
                 sendJson(res, 200, { ok: true, status: 'ok', account: confirmed.account })
                 return
               }
@@ -490,8 +494,12 @@ export function apply(ctx) {
         child.webServer.register({
           kind: 'exact',
           path: AUTH_STATUS_ROUTE,
-          handler: (req, res) => {
-            sendJson(res, 200, { ok: true, ...getLoginStatus(homeDir) })
+          handler: async (req, res) => {
+            try {
+              sendJson(res, 200, { ok: true, ...(await ensureNav(homeDir)) })
+            } catch (error) {
+              sendJson(res, 200, { ok: true, ...getLoginStatus(homeDir) })
+            }
           },
         }),
       )
