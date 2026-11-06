@@ -178,6 +178,8 @@
   var qrPollTries = 0
   var dlBtn = null
   var dlStatusEl = null
+  var dlDirEl = null
+  var dlDir = ''
   var dlTaskId = null
   var dlTimer = null
   // 上一次轮询的 {时间, 已下载字节}，用来估算下载速度。
@@ -1128,6 +1130,22 @@
     }
   }
 
+  /** 拉一次宿主解析出的「保存目录」并显示（首次打开面板时）。 */
+  function loadDownloadDir() {
+    if (!ROUTES.download || !ROUTES.download.list || dlDir) return
+    fetchJson(ROUTES.download.list, { cache: 'no-store' }).then(
+      function (data) {
+        if (!data || data.ok !== true || !data.dir) return
+        dlDir = String(data.dir)
+        if (dlDirEl !== null) {
+          dlDirEl.textContent = dlDir
+          dlDirEl.setAttribute('title', '下载保存目录：' + dlDir)
+        }
+      },
+      noop,
+    )
+  }
+
   /** 取路径里的文件名（兼容 / 与 \）。 */
   function fileNameOf(p) {
     if (!p) return ''
@@ -1181,6 +1199,7 @@
     if (t.status === 'done') {
       var size = Number(t.total) > 0 ? Number(t.total) : Number(t.received) || 0
       setDownloadLine('已保存: ' + fileNameOf(t.path) + (size > 0 ? '（' + formatBytes(size) + '）' : ''), 'ok')
+      if (dlStatusEl !== null) dlStatusEl.setAttribute('title', '完整路径：' + String(t.path || ''))
     } else if (t.status === 'error') setDownloadLine('下载失败: ' + (t.error || '未知原因'), 'error')
     else if (t.status === 'queued') setDownloadLine('排队中…', '')
     else {
@@ -1626,6 +1645,8 @@
     var dlRow = el('div', 'dsbili-row dsbili-dlrow')
     var dlHead = el('div', 'dsbili-rowhead')
     dlHead.appendChild(el('span', null, '下载当前视频'))
+    dlDirEl = el('span', 'dsbili-dl-dir', '')
+    dlHead.appendChild(dlDirEl)
     dlBtn = el('button', 'dsbili-btn', '⬇ 下载当前')
     dlBtn.id = 'dsbili-dl-btn'
     dlBtn.addEventListener('click', startDownloadCurrent)
@@ -1635,6 +1656,7 @@
     dlRow.appendChild(dlBtn)
     dlRow.appendChild(dlStatusEl)
     bodyEl.appendChild(dlRow)
+    loadDownloadDir()
 
     // 播放控制
     var row1 = el('div', 'dsbili-btnrow')

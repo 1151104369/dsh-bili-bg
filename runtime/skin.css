@@ -648,3 +648,17 @@ body:not([data-ds-dark-theme]) .dsbili-item:hover {
 .dsbili-dl-status {
   min-height: 16px;
 }
+
+/* 保存目录：标题行右侧的小字，长路径用省略号，悬停看完整路径 */
+.dsbili-dl-dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 58%;
+  font-size: 10.5px;
+  opacity: 0.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* 太长时优先保留尾部（目录名更有信息量） */
+  text-align: left;
+}

@@ -314,6 +314,9 @@ const dlBtn = findById(document.body, 'dsbili-dl-btn')
 const dlRow = findByClass(document.body, 'dsbili-dlrow')
 ok('download section rendered in panel body', !!dlRow && !!dlBtn && dlRow !== null)
 ok('download button enabled after current loaded', !!dlBtn && dlBtn.disabled === false)
+// 面板应显示宿主解析出的保存目录（避免用户不知道文件去哪了）
+const dlDirEl = findByClass(document.body, 'dsbili-dl-dir')
+ok('download dir shown in panel', !!dlDirEl && String(dlDirEl.textContent).includes('DSH-B站背景'), dlDirEl && dlDirEl.textContent)
 
 // 下载状态行要显示「大小 / 总大小」（以及后续轮询的速度）。
 api.download()
