@@ -95,6 +95,31 @@ function moofWithDecode(base) {
   return box('moof', join(mfhd, traf))
 }
 
+/** 合成 sidx：version 0/1，timescale、earliest、first_offset、entries=[{size,dur}]。 */
+function buildSidx({ version = 0, timescale = 1000, earliest = 0, firstOffset = 0, entries = [] } = {}) {
+  const head = []
+  head.push(Uint8Array.from([version, 0, 0, 0])) // version+flags
+  head.push(be32n(1)) // reference_ID
+  head.push(be32n(timescale))
+  if (version === 1) {
+    head.push(be32n(Math.floor(earliest / 4294967296)), be32n(earliest >>> 0))
+    head.push(be32n(Math.floor(firstOffset / 4294967296)), be32n(firstOffset >>> 0))
+  } else {
+    head.push(be32n(earliest))
+    head.push(be32n(firstOffset))
+  }
+  head.push(Uint8Array.from([0, 0])) // reserved
+  head.push(Uint8Array.from([(entries.length >> 8) & 0xff, entries.length & 0xff]))
+  const body = [join(...head)]
+  for (const e of entries) {
+    body.push(be32n(e.size)) // reference_type(1) + referenced_size(31)
+    body.push(be32n(e.dur))
+    body.push(be32n(0)) // SAP flags
+  }
+  const payload = join(...body)
+  return box('sidx', payload)
+}
+
 // ─────────────────────── 解析器单测 ───────────────────────
 
 function loadDash() {
@@ -216,6 +241,52 @@ ok('exposes parse helpers', !!(dash._boxHeaderAt && dash._initEndOf && dash._med
   const pick5 = dash._findMoofBoundary(bytes, base, ts, 5) // 没有 <=5 的 → 返回第一个
   ok('findMoofBoundary falls back to first when none <= target', !!pick5 && Math.abs(pick5.t - 10) < 1e-6, pick5)
   ok('findMoofBoundary ignores fake mdat moof marker', !!pick25 && pick25.t !== 0)
+}
+
+// sidx（Segment Index）解析：B 站分轨 init 段后面跟 sidx，精确写入每个子分片的字节长度/时长。
+// 有了它，seek 可一步算出字节偏移，不必估算+探测。
+{
+  const header = box('ftyp', ascii('isom'))
+  const init = join(header, box('moov', box('trak', box('mdia', mdhd(1000)))))
+  const entries = [
+    { size: 100, dur: 1000 },
+    { size: 200, dur: 1000 },
+    { size: 300, dur: 1000 },
+  ]
+  const sidxV0 = buildSidx({ version: 0, timescale: 1000, earliest: 0, firstOffset: 0, entries })
+  const bytes = join(init, sidxV0)
+  const parsed = dash._parseSidx(bytes, init.length)
+  ok('parseSidx v0', !!parsed && parsed.timescale === 1000 && parsed.entries.length === 3, parsed)
+  const base = init.length + sidxV0.length
+  ok('parseSidx sidxEnd/firstOffset', !!parsed && parsed.sidxEnd === base && parsed.firstOffset === 0)
+  const h0 = dash._sidxOffsetFor(parsed, 0)
+  const h1 = dash._sidxOffsetFor(parsed, 1.5)
+  const h2 = dash._sidxOffsetFor(parsed, 2.5)
+  ok('sidxOffsetFor 0s -> first subsegment', !!h0 && h0.offset === base, h0)
+  ok('sidxOffsetFor 1.5s -> second subsegment', !!h1 && h1.offset === base + 100, h1)
+  ok('sidxOffsetFor 2.5s -> third subsegment', !!h2 && h2.offset === base + 300, h2)
+
+  // version 1：earliest/first_offset 是 64 位；这里 timescale=16000、每片 16000 ticks=1s。
+  const sidxV1 = buildSidx({
+    version: 1,
+    timescale: 16000,
+    earliest: 16000,
+    firstOffset: 0,
+    entries: [
+      { size: 100, dur: 16000 },
+      { size: 200, dur: 16000 },
+    ],
+  })
+  const bytesV1 = join(init, sidxV1)
+  const parsedV1 = dash._parseSidx(bytesV1, init.length)
+  ok('parseSidx v1 (64-bit times)', !!parsedV1 && parsedV1.timescale === 16000 && parsedV1.earliest === 16000, parsedV1 && parsedV1.earliest)
+  // earliest=1s，target 1.5s 落在第一个分片（1s~2s）起点
+  const hv1 = dash._sidxOffsetFor(parsedV1, 1.5)
+  ok('sidxOffsetFor v1 honours earliest', !!hv1 && hv1.offset === init.length + sidxV1.length, hv1)
+
+  // 非 sidx box → null（不能误解析）
+  const notSidx = join(init, box('mdat', new Uint8Array(32).fill(1)))
+  ok('parseSidx returns null for non-sidx', dash._parseSidx(notSidx, init.length) === null)
 }
 
 // ─────────────────────── 播放器装配 / 回退 ───────────────────────
@@ -420,6 +491,116 @@ ok('supported() false without MediaSource', dash.supported() === false)
   else delete globalThis.URL
 
   ok('MSE-absent environment had supported()=false (sanity)', true)
+
+  // ── 快速连续 seek（拖动进度条）不得触发回退 ──
+  // 回归：skin.js 早先在每个 input 事件都调 seek，连续 flush 撞车 → 误触发 onFallback → 显示
+  // 「高清已开 + 已回退 720p」。dash.js 现在串行化 seek，读到被顶替的读循环 rejection 也不降级。
+  {
+    // 用空 buffered（covers 恒 false）逼每次 seek 走硬 seek 分支
+    const logs2 = { v: [], a: [] }
+    let fallback2 = null
+    function SB(mime) {
+      const sb = {
+        updating: false,
+        buffered: { length: 0, start: () => 0, end: () => 0 },
+        listeners: {},
+        addEventListener(t, h) {
+          ;(sb.listeners[t] = sb.listeners[t] || []).push(h)
+        },
+        removeEventListener() {},
+        abort() {
+          sb.updating = false
+          setTimeout(() => (sb.listeners.updateend || []).forEach((h) => h()), 0)
+        },
+        remove() {
+          sb.updating = true
+          setTimeout(() => {
+            sb.updating = false
+            ;(sb.listeners.updateend || []).forEach((h) => h())
+          }, 0)
+        },
+        appendBuffer(bytes) {
+          if (sb.updating) throw new DOMException('BUSY', 'InvalidStateError')
+          sb.updating = true
+          ;(mime.indexOf('video') === 0 ? logs2.v : logs2.a).push(1)
+          setTimeout(() => {
+            sb.updating = false
+            ;(sb.listeners.updateend || []).forEach((h) => h())
+          }, 0)
+        },
+      }
+      return sb
+    }
+    function MS2() {
+      const ms = {
+        readyState: 'open',
+        duration: NaN,
+        listeners: {},
+        addEventListener(t, h) {
+          ;(ms.listeners[t] = ms.listeners[t] || []).push(h)
+        },
+        removeEventListener() {},
+        addSourceBuffer(mime) {
+          return SB(mime)
+        },
+        endOfStream() {},
+      }
+      setTimeout(() => (ms.listeners.sourceopen || []).forEach((h) => h()), 0)
+      return ms
+    }
+    const savedMS2 = globalThis.MediaSource
+    const savedURL2 = globalThis.URL
+    globalThis.MediaSource = MS2
+    globalThis.URL = { createObjectURL: () => 'blob:seek', revokeObjectURL() {} }
+
+    const initV2 = join(box('ftyp', ascii('isom')), box('moov', box('trak', box('mdia', mdhd(16000)))))
+    const mediaAt = (t) => join(moofWithDecode(16000 * t), box('mdat', new Uint8Array(128).fill(2)))
+    const player2 = dash.create({
+      video: { currentTime: 0, paused: true, fastSeek() {}, play() {}, set src(u) {} },
+      duration: 60,
+      tracks: {
+        video: { media: '/m?kind=video', mimeType: 'video/mp4', codecs: 'avc1.640028' },
+        audio: { media: '/m?kind=audio', mimeType: 'audio/mp4', codecs: 'mp4a.40.2' },
+      },
+      fetchFn: (url, init) => {
+        const range = String((init && init.headers && init.headers.Range) || '')
+        if (range.indexOf('bytes=0-') === 0) return Promise.resolve(makeResponse2(initV2))
+        const m = range.match(/bytes=(\d+)-/)
+        const off = m ? Number(m[1]) : 0
+        return Promise.resolve(makeResponse2(mediaAt(Math.min(59, Math.floor(off / 1024)))))
+      },
+      onFallback: (r) => {
+        fallback2 = r
+      },
+    })
+    function makeResponse2(bytes) {
+      return {
+        ok: true,
+        status: 206,
+        headers: { get: () => String(bytes.length), has: () => true },
+        arrayBuffer: () => Promise.resolve(Uint8Array.from(bytes)),
+      }
+    }
+    player2.load()
+    await sleep(80)
+    // 模拟拖动：短时间连续 5 次 seek
+    player2.seek(5)
+    player2.seek(10)
+    player2.seek(15)
+    player2.seek(20)
+    player2.seek(25)
+    await sleep(350)
+    ok('rapid seek (drag) does not trigger fallback', fallback2 === null, fallback2)
+    ok('rapid seek keeps appending after coalescing', logs2.v.length >= 2 || logs2.a.length >= 2, {
+      v: logs2.v.length,
+      a: logs2.a.length,
+    })
+    player2.destroy()
+    if (savedMS2 !== undefined) globalThis.MediaSource = savedMS2
+    else delete globalThis.MediaSource
+    if (savedURL2 !== undefined) globalThis.URL = savedURL2
+    else delete globalThis.URL
+  }
 }
 
 function sleep(ms) {

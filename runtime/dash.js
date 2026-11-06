@@ -209,6 +209,94 @@
     return best || first
   }
 
+  /**
+   * 解析 sidx（Segment Index）box：B 站每个分轨的 init 段后面紧跟一个 sidx，里面记录了
+   * 整个文件每个子分片的字节长度与时长。有了它，**任意时间的字节偏移可以精确算出**，
+   * 不必靠「总字节数 × 时间比例」估算再去探测 moof 边界。
+   *
+   * @param {Uint8Array} bytes 含 sidx 的字节
+   * @param {number} off sidx box 起始偏移
+   * @returns {{timescale:number, earliest:number, firstOffset:number, sidxEnd:number, entries:Array<{size:number,dur:number}>}|null}
+   */
+  function parseSidx(bytes, off) {
+    if (!bytes || off < 0 || off + 12 > bytes.length) return null
+    var size = be32(bytes, off)
+    if (size < 12 || off + size > bytes.length) return null
+    var type = String.fromCharCode(bytes[off + 4], bytes[off + 5], bytes[off + 6], bytes[off + 7])
+    if (type !== 'sidx') return null
+    var p = off + 8
+    var version = bytes[p] & 0xff
+    p += 4 // version + flags
+    p += 4 // reference_ID
+    var timescale = be32(bytes, p)
+    p += 4
+    var earliest
+    var firstOffset
+    if (version === 0) {
+      earliest = be32(bytes, p)
+      p += 4
+      firstOffset = be32(bytes, p)
+      p += 4
+    } else {
+      earliest = be64(bytes, p)
+      p += 8
+      firstOffset = be64(bytes, p)
+      p += 8
+    }
+    p += 2 // reserved
+    if (p + 2 > off + size) return null
+    var count = (bytes[p] << 8) | bytes[p + 1]
+    p += 2
+    var entries = []
+    for (var i = 0; i < count; i += 1) {
+      if (p + 12 > off + size) break
+      var ref = be32(bytes, p)
+      p += 4
+      var refSize = ref & 0x7fffffff
+      var dur = be32(bytes, p)
+      p += 4
+      p += 4 // SAP start/type/delta
+      if (refSize <= 0) continue
+      entries.push({ size: refSize, dur: dur })
+    }
+    if (!entries.length) return null
+    return {
+      timescale: timescale || 1000,
+      earliest: earliest,
+      firstOffset: firstOffset,
+      sidxEnd: off + size,
+      entries: entries,
+    }
+  }
+
+  /**
+   * 从 sidx 精确算「目标时间所在子分片」的字节起始偏移（= 该分片的 moof 起点）。
+   * 找不到就返回 null（调用方会退回 moof 扫描/估算）。
+   */
+  function sidxOffsetFor(sidx, target) {
+    if (!sidx || !sidx.entries || !sidx.entries.length) return null
+    var ts = sidx.timescale || 1000
+    var base = sidx.sidxEnd + sidx.firstOffset
+    var cumDur = 0
+    var cumBytes = 0
+    for (var i = 0; i < sidx.entries.length; i += 1) {
+      var e = sidx.entries[i]
+      var startT = (sidx.earliest + cumDur) / ts
+      var endT = (sidx.earliest + cumDur + e.dur) / ts
+      if (target < endT || i === sidx.entries.length - 1) {
+        // 落在该分片内（或越过最后一个）：用该分片起点
+        if (target < startT && i > 0) {
+          // 目标在上一分片里（浮点边界），回退一片
+          return { offset: base + cumBytes - sidx.entries[i - 1].size, t: startT }
+        }
+        return { offset: base + cumBytes, t: startT }
+      }
+      cumDur += e.dur
+      cumBytes += e.size
+    }
+    return null
+  }
+
   // ────────────────────────────── 流扫描器 ──────────────────────────────
   //
   // 一边读一边把完整 box 从字节流里剥出来：moof（小）留着解析 tfdt 建索引；
@@ -485,6 +573,7 @@
           initBytes: null,
           initEnd: 0,
           timescale: 1000,
+          sidx: null,
           scan: null,
           segIndex: [],
           appendQueue: [],
@@ -661,10 +750,13 @@
               var full = u8(fullAb)
               ts.initBytes = full.subarray(0, initEndOf(full) || initEnd)
               ts.initEnd = ts.initBytes.length
+              ts.sidx = parseSidx(full, ts.initEnd)
             })
           }
           ts.initBytes = bytes.subarray(0, initEnd)
           ts.initEnd = initEnd
+          // sidx 紧跟 moov 之后（initEnd 就是它的起点）；探针里一般已包含整个 sidx。
+          ts.sidx = parseSidx(bytes, initEnd)
         })
         .then(function () {
           ts.timescale = mediaTimescaleOf(ts.initBytes) || 1000
@@ -685,14 +777,23 @@
 
     /** 从绝对字节偏移 fromOffset 起流式拉取一条轨（媒体部分）。调用方需先 resetScanner(fromOffset)。 */
     function startTrackFetch(ts, fromOffset) {
-      if (destroyed || ts.fetchActive) return
+      if (destroyed) return Promise.resolve()
+      var token = (ts.fetchToken || 0) + 1
+      ts.fetchToken = token
       ts.fetchActive = true
       return fetchOnce(ts.spec.media, {
         cache: 'no-store',
         headers: { Range: 'bytes=' + fromOffset + '-' },
       })
         .then(function (res) {
-          if (destroyed) return
+          if (destroyed || ts.fetchToken !== token) {
+            try {
+              res && res.body && res.body.cancel && res.body.cancel()
+            } catch (e) {
+              /* ignore */
+            }
+            return
+          }
           if (!res || !res.ok) throw new Error('http ' + (res && res.status))
           if (res.headers && res.headers.get) {
             var cl = Number(res.headers.get('content-length'))
@@ -700,11 +801,11 @@
           }
           if (res.body && typeof res.body.getReader === 'function') {
             ts.reader = res.body.getReader()
-            return pumpReader(ts)
+            return pumpReader(ts, token)
           }
           // 没有流式 body（代理兜底）→ 一次读完
           return res.arrayBuffer().then(function (ab) {
-            if (destroyed) return
+            if (destroyed || ts.fetchToken !== token) return
             ts.totalBytes = fromOffset + ab.byteLength
             feedChunk(ts, u8(ab))
             ts.readDone = true
@@ -714,7 +815,8 @@
           })
         })
         .catch(function (e) {
-          if (destroyed) return
+          // 被后续 seek 顶替掉的请求失败不算真失败
+          if (destroyed || ts.fetchToken !== token) return
           fail('分轨下载失败：' + msgOf(e))
         })
     }
@@ -740,12 +842,15 @@
       })
     }
 
-    function pumpReader(ts) {
+    function pumpReader(ts, token) {
+      function stale() {
+        return destroyed || ts.fetchToken !== token || !ts.reader
+      }
       function step() {
-        if (destroyed || !ts.reader) return
+        if (stale()) return
         ts.reader.read().then(
           function (r) {
-            if (destroyed || !ts.reader) return
+            if (stale()) return
             if (r.done) {
               ts.reader = null
               ts.readDone = true
@@ -757,7 +862,8 @@
             whenAppendsSettled(ts).then(step)
           },
           function (e) {
-            if (destroyed) return
+            // 被后续 seek 取消/顶替的读循环，其 rejection 不应触发降级
+            if (stale()) return
             fail('分轨下载中断：' + msgOf(e))
           },
         )
@@ -849,8 +955,22 @@
     }
 
     // ── seek ──
+    // 拖动进度条/连续 seek 会短时间多次调用；硬 seek 要做两轨 flush+重填，不能并发。
+    // 这里串行化：正在 seek 时只记住最后一个目标，完成后接着执行。
+    var seeking = false
+    var queuedSeek = null
+
     function seekTo(t) {
       var target = clamp(Number(t) || 0, 0, duration > 0 ? duration : 1e9)
+      queuedSeek = target
+      if (seeking) return
+      runSeek()
+    }
+
+    function runSeek() {
+      if (destroyed || queuedSeek === null) return
+      var target = queuedSeek
+      queuedSeek = null
       if (!state.video) {
         pendingSeek = target
         return
@@ -865,14 +985,26 @@
             /* ignore */
           }
         }
+        // 已缓冲范围内是瞬时的；若期间又来了新目标，继续处理
+        if (queuedSeek !== null) global.setTimeout(runSeek, 0)
         return
       }
       // 硬 seek：两轨对称 flush + 从目标前最近的关键帧字节偏移重填
+      seeking = true
       pendingSeek = target
       var v = state.video
       var a = state.audio
-      restartTrack(v, target)
-      if (a) restartTrack(a, target)
+      var waits = []
+      waits.push(restartTrack(v, target))
+      if (a) waits.push(restartTrack(a, target))
+      Promise.all(waits)
+        .catch(noop)
+        .then(function () {
+          if (destroyed) return
+          seeking = false
+          // 硬 seek 完成（已经开始重填）；若拖动期间又有新目标，继续处理最新的
+          if (queuedSeek !== null) runSeek()
+        })
     }
 
     /**
@@ -880,12 +1012,19 @@
      * 否则按总字节占比估算（exact=false，调用方会再探 moof 边界修正）。
      */
     function refillOffset(ts, target) {
+      // ① 首选 sidx：精确到子分片的字节偏移（B 站每个分轨都带，覆盖整个文件）。
+      var sidxHit = sidxOffsetFor(ts.sidx, target)
+      if (sidxHit && isFinite(sidxHit.offset) && sidxHit.offset >= ts.initEnd) {
+        return { offset: Math.floor(sidxHit.offset), exact: true }
+      }
+      // ② 退而用已扫描到的 moof 索引（覆盖已流式下载过的区域）。
       var best = null
       for (var i = 0; i < ts.segIndex.length; i += 1) {
         var e = ts.segIndex[i]
         if (e.t <= target && (!best || e.t > best.t)) best = e
       }
       if (best) return { offset: best.off, exact: true }
+      // ③ 都没有：按总字节占比估算（调用方会再探 moof 边界修正）。
       if (duration > 0 && ts.totalBytes > 0) {
         var est = Math.max(ts.initEnd, Math.floor((target / duration) * ts.totalBytes))
         return { offset: est, exact: false }
@@ -898,23 +1037,29 @@
      * 停旧流 → 对称 flush（remove 整条）→ 重 app init → 从偏移起重拉媒体。
      */
     function restartTrack(ts, target) {
-      if (!ts) return
+      if (!ts) return Promise.resolve()
       var refill = refillOffset(ts, target)
-      var hadBuffered = isFinite(bufferedEnd(ts)) && bufferedEnd(ts) > 0
-      // 停旧下载 / 清 pending append
-      if (ts.reader) {
-        try {
-          ts.reader.cancel && ts.reader.cancel()
-        } catch (e) {
-          /* ignore */
-        }
-        ts.reader = null
+      // 停旧读循环（令牌递增让旧循环/旧请求的回调全部失效，绝不误判成“下载中断”去降级）
+      try {
+        if (ts.reader) ts.reader.cancel && ts.reader.cancel()
+      } catch (e) {
+        /* ignore */
       }
+      ts.reader = null
+      ts.fetchToken = (ts.fetchToken || 0) + 1
       ts.fetchActive = false
       ts.appendQueue = []
       ts.drainResolvers = []
       ts.readDone = false
+      // 先中止正在进行的 append/remove，避免 remove 抛 InvalidStateError 后我们还重复 append init
+      try {
+        if (ts.sb.updating) ts.sb.abort()
+      } catch (e) {
+        /* ignore */
+      }
+      ts.appendBusy = false
       // 对称 flush
+      var hadBuffered = isFinite(bufferedEnd(ts)) && bufferedEnd(ts) > 0
       if (hadBuffered) {
         try {
           ts.sb.remove(0, bufferedEnd(ts))
@@ -922,30 +1067,37 @@
           hadBuffered = false
         }
       }
-      // 先重放 init，再接 flush 收尾后从回填点拉媒体
-      if (ts.initBytes) enqueueAppend(ts, ts.initBytes)
+      // 顺序必须是：remove 收尾 → 重放 init → 从回填点拉媒体分片。
+      // 早先把 init 在 remove 之前就入队，连续 seek 时会和 remove 竞争、重复 init。
       var gate = hadBuffered ? waitDrain(ts) : whenAppendsSettled(ts)
-      gate.then(function () {
-        if (destroyed) return
-        if (refill.exact) {
-          resetScanner(ts, refill.offset)
-          startTrackFetch(ts, refill.offset)
-          return
-        }
-        // 只有估算偏移：先探一小段、在真实字节里找最近的 moof 边界，避免落在 mdat 中间
-        // 导致 append 出坏数据。找不到就退回估算值，至少不崩。
-        probeMoofBoundary(ts, refill.offset, target)
-          .then(function (offset) {
-            if (destroyed) return
-            resetScanner(ts, offset)
-            startTrackFetch(ts, offset)
-          })
-          .catch(function () {
-            if (destroyed) return
+      return gate
+        .then(function () {
+          if (destroyed) return
+          if (!ts.initBytes) return
+          enqueueAppend(ts, ts.initBytes)
+          return whenAppendsSettled(ts)
+        })
+        .then(function () {
+          if (destroyed) return
+          if (refill.exact) {
             resetScanner(ts, refill.offset)
             startTrackFetch(ts, refill.offset)
-          })
-      })
+            return
+          }
+          // 只有估算偏移：先探一小段、在真实字节里找最近的 moof 边界，避免落在 mdat 中间
+          // 导致 append 出坏数据。找不到就退回估算值，至少不崩。
+          return probeMoofBoundary(ts, refill.offset, target)
+            .then(function (offset) {
+              if (destroyed) return
+              resetScanner(ts, offset)
+              startTrackFetch(ts, offset)
+            })
+            .catch(function () {
+              if (destroyed) return
+              resetScanner(ts, refill.offset)
+              startTrackFetch(ts, refill.offset)
+            })
+        })
     }
 
     /**
@@ -1075,5 +1227,7 @@
     _moofDecodeTime: moofDecodeTime,
     _makeScanner: makeScanner,
     _findMoofBoundary: findMoofBoundary,
+    _parseSidx: parseSidx,
+    _sidxOffsetFor: sidxOffsetFor,
   }
 })(typeof window !== 'undefined' ? window : globalThis)

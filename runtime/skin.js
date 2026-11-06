@@ -116,6 +116,7 @@
     expanded: false,
     clear: false,
     progressDragging: false,
+    seekTarget: null,
     pendingSeek: null,
     resume: true,
     duration: 0,
@@ -744,20 +745,34 @@
   }
 
   /** MSE 失败/不可用：销毁并立刻回退 720p 单文件，绝不留白屏。 */
+  var degrading = false
   function degradeTo720p(reason) {
+    // 可能被 onFallback / video error / 超时看门狗同时触发，只处理第一次。
+    if (degrading) return
+    degrading = true
+    // 回退也要保住当前进度（否则会被观感成“从头播”）。
+    var pos = currentPlayPos()
     destroyDash()
     st.hdEffective = false
     st.hdFallback = reason || '已回退 720p'
-    setStatus('高清不可用：' + st.hdFallback + '，已回退 720p 单文件', 'error')
+    // 关键：失败后把高清开关**关掉**，否则 UI 会同时显示「高清已开」和「已回退 720p」，
+    // 自相矛盾。现在状态统一为：高清(关) + 当前 720p（附回退原因）。
+    st.hd = false
+    setStatus('高清不可用：' + st.hdFallback + '，已自动切回 720p 单文件（可再点「高清」重试）', 'error')
     syncButtons()
     syncQuality()
     if (st.current && st.current.bvid) {
-      var keepHd = st.hd
-      st.hd = false
+      if (pos !== null) st.pendingSeek = pos
       switchingSrc = true
       loadAndPlay(st.current.bvid, { autoPlay: st.playing === true, hd: false })
-      st.hd = keepHd
     }
+    resetDegrading()
+  }
+  /** 回退是异步重载，给一个小延迟再允许下一次回退，避免同一轮错误风暴里反复重载。 */
+  function resetDegrading() {
+    global.setTimeout(function () {
+      degrading = false
+    }, 1200)
   }
 
   /** 当前播放位置（切换高清时用来保位置，别从头播）。 */
@@ -834,8 +849,8 @@
     }
     if (hdStateEl !== null) {
       var label = ''
-      if (!st.hd) label = '720p 单文件'
-      else if (st.hdFallback) label = '已回退 720p'
+      // 注意：回退时 st.hd 已被置为 false，所以这里不会再出现「高清已开 + 已回退」的矛盾。
+      if (!st.hd) label = st.hdFallback ? '已回退 720p' : '720p 单文件'
       else if (st.hdEffective && st.current) label = (formatLabel(st.current.height) || st.current.quality || '') + ' 高清'
       else label = '高清…'
       hdStateEl.textContent = label
@@ -2122,11 +2137,12 @@
       if (video === null) return
       var target = Number(progressRange.value)
       if (!isFinite(target)) return
-      // 高清（MSE）：seek 必须由播放器对称处理两轨（同时 flush、都从关键帧重填）。
-      // 已缓冲范围内交给 media element 原生快 seek，两轨共享时间轴，天然同步。
-      if (st.hdEffective && dashPlayer !== null) {
-        dashPlayer.seek(target)
-      } else {
+      st.seekTarget = target
+      // 高清（MSE）：拖动过程中**不要**每次都做两轨对称 seek —— 一次拖动会触发几十个
+      // input 事件，连续 flush/重填会互相打架，表现为拖动后莫名回退 720p 或状态错乱。
+      // 这里只更新文案，松手（endSeek）时再一次性 seek。
+      if (!(st.hdEffective && dashPlayer !== null)) {
+        // 单文件：直接改 currentTime 很便宜，浏览器自己处理连续变化。
         try {
           video.currentTime = target
         } catch (e) {
@@ -2143,17 +2159,37 @@
         progressTime.textContent = formatTime(target) + ' / ' + (dur > 0 ? formatTime(dur) : '--:--')
       }
     })
-    function endSeek() {
-      if (!st.progressDragging) return
+    function endSeek(force) {
+      var wasDragging = st.progressDragging === true
+      if (!wasDragging && force !== true) return
       st.progressDragging = false
+      var target = st.seekTarget
+      st.seekTarget = null
+      if (target !== null && isFinite(target)) {
+        if (st.hdEffective && dashPlayer !== null) {
+          dashPlayer.seek(target)
+        } else if (video !== null) {
+          try {
+            video.currentTime = target
+          } catch (e) {
+            /* ignore */
+          }
+        }
+      }
       persist()
       // seek 是异步的：这里不立刻读 currentTime（可能还是旧值，会把滑块弹回去），
       // 交给 'seeked' 事件刷新；再留一个兜底刷新。
       global.setTimeout(updateProgressUi, 160)
     }
-    progressRange.addEventListener('pointerup', endSeek)
-    progressRange.addEventListener('pointercancel', endSeek)
-    progressRange.addEventListener('change', endSeek)
+    progressRange.addEventListener('pointerup', function () {
+      endSeek(false)
+    })
+    progressRange.addEventListener('pointercancel', function () {
+      endSeek(true)
+    })
+    progressRange.addEventListener('change', function () {
+      endSeek(true)
+    })
     progRow.appendChild(progHead)
     progRow.appendChild(progressRange)
     bodyEl.appendChild(progRow)

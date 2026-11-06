@@ -631,6 +631,12 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
     nomSrc,
   )
   ok('hd without MSE reports effective=false', hdApi.state.hdEffective === false)
+  // 回退后必须状态自洽：高清开关变回「关」，不能同时显示「高清已开」+「已回退 720p」。
+  ok('fallback turns hd toggle off (no contradictory UI)', hdApi.state.hd === false, hdApi.state.hd)
+  const hdStateEl = findByClass(hdDoc.body, 'dsbili-hd-state')
+  ok('fallback label shows 已回退 720p', !!hdStateEl && String(hdStateEl.textContent) === '已回退 720p', hdStateEl && hdStateEl.textContent)
+  const hdBtnAfter = findById(hdDoc.body, 'dsbili-hd-btn')
+  ok('fallback toggle button is not "已开"', !!hdBtnAfter && hdBtnAfter.textContent.indexOf('已开') === -1, hdBtnAfter && hdBtnAfter.textContent)
   hdWin.__DSH_BILI_DASH__ = fakeDashLib
   hdApi.teardown()
 }
