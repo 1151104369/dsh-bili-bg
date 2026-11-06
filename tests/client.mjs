@@ -103,17 +103,21 @@ function makeNode(tag) {
   return node
 }
 
-const document = {
-  createElement(tag) {
-    return makeNode(tag)
-  },
-  getElementById() {
-    return null
-  },
-  documentElement: makeNode('html'),
-  body: makeNode('body'),
-  hidden: false,
+function makeDocument() {
+  return {
+    createElement(tag) {
+      return makeNode(tag)
+    },
+    getElementById() {
+      return null
+    },
+    documentElement: makeNode('html'),
+    body: makeNode('body'),
+    hidden: false,
+  }
 }
+
+const document = makeDocument()
 
 function stubFetch(url, opts) {
   const u = String(url)
@@ -322,5 +326,69 @@ if (api.auth && api.auth.logout) api.auth.logout()
 await new Promise((r) => setTimeout(r, 40))
 ok('after logout shows login button again', !!findByClass(document.body, 'dsbili-account-login'))
 ok('source falls back to popular after logout', api.state.source === 'popular', api.state.source)
+
+// ── 重启续播：上次「暂停」退出，重启后也要把那个视频恢复回来（不能丢）──
+const recoverDoc = makeDocument()
+function recoverFetch(url, opts) {
+  const u = String(url)
+  let payload = {}
+  if (u.includes('/auth/status')) payload = { ok: true, loggedIn: false, account: null }
+  else if (u.includes('/state')) {
+    payload =
+      opts && opts.method === 'POST'
+        ? { ok: true }
+        : {
+            ok: true,
+            state: {
+              bvid: 'BV1GJ411x7h7',
+              title: '暂停的视频',
+              time: 42,
+              playing: false,
+              source: 'popular',
+              sourcePicked: true,
+              resume: true,
+            },
+          }
+  } else if (u.includes('/play')) {
+    payload = {
+      ok: true,
+      bvid: 'BV1GJ411x7h7',
+      title: '暂停的视频',
+      src: '/dsh-bili/media?bvid=BV1GJ411x7h7&cid=1',
+      duration: 100,
+      quality: 64,
+      owner: 'o',
+    }
+  } else if (u.includes('/queue')) payload = { ok: true, list: [] }
+  return Promise.resolve({ json: () => Promise.resolve(payload) })
+}
+const recoverWin = {
+  document: recoverDoc,
+  fetch: recoverFetch,
+  setTimeout,
+  clearTimeout,
+  MutationObserver: undefined,
+  console,
+  location: { search: '' },
+  __DSH_BILI_BG__: window.__DSH_BILI_BG__,
+}
+recoverWin.window = recoverWin
+recoverWin.globalThis = recoverWin
+const recoverRunner = new Function(
+  'window',
+  'document',
+  'fetch',
+  'setTimeout',
+  'clearTimeout',
+  'console',
+  code + '\nreturn window.__DSH_BILI_BG_API__;',
+)
+const recoverApi = recoverRunner(recoverWin, recoverDoc, recoverFetch, setTimeout, clearTimeout, console)
+await new Promise((r) => setTimeout(r, 220))
+const recoverVideo = findById(recoverDoc.body, 'dsbili-video')
+ok('restores last video after restart even when paused', !!recoverApi.state.current && recoverApi.state.current.bvid === 'BV1GJ411x7h7', recoverApi.state.current && recoverApi.state.current.bvid)
+ok('restored video loads its src', !!recoverVideo && String(recoverVideo.src).includes('BV1GJ411x7h7'))
+ok('restored video stays paused (not autoplayed)', !!recoverVideo && recoverVideo.paused === true && recoverApi.state.playing === false)
+ok('restored video records resume position', recoverApi.state.pendingSeek === null || recoverApi.state.pendingSeek === 42)
 
 console.log(`\n${pass} checks passed`)

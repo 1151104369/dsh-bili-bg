@@ -478,9 +478,14 @@
     else settle(true)
   }
 
-  /** 解析并播放一个输入（BV / 链接 / aid）。 */
-  function loadAndPlay(input) {
+  /**
+   * 解析并播放一个输入（BV / 链接 / aid）。
+   * @param {string} input BV 号 / 链接
+   * @param {{autoPlay?: boolean}} [opts] autoPlay=false 时只加载（恢复到上次暂停的位置），不自动播放
+   */
+  function loadAndPlay(input, opts) {
     if (st.busy) return
+    var autoPlay = !(opts && opts.autoPlay === false)
     var query = str(input).trim()
     if (query === '') {
       setStatus('请先输入 BV 号或 bilibili 链接', 'error')
@@ -528,11 +533,22 @@
             } catch (e) {
               /* ignore */
             }
-            tryPlay(!st.muted)
+            if (autoPlay) {
+              tryPlay(!st.muted)
+            } else {
+              // 恢复到「上次暂停」的状态：加载到记录位置但不自动播放。
+              st.playing = false
+              try {
+                video.pause()
+              } catch (e) {
+                /* ignore */
+              }
+              syncButtons()
+            }
           }
           updateNow()
           syncButtons()
-          setStatus('正在播放', 'ok')
+          setStatus(autoPlay ? '正在播放' : '已恢复上次暂停的视频（点播放继续）', autoPlay ? 'ok' : '')
           persist()
         },
         function (error) {
@@ -1043,11 +1059,13 @@
         applyVeil()
         // 来源策略可能依赖登录态（已登录默认首页推荐），两者都就绪后再定一次。
         applyDefaultSource()
-        // 启动续播：上次正在播且记了进度 → 自动接着播（无手势时浏览器会退回静音）
-        if (st.resume && s.bvid && s.playing === true) {
+        // 启动续播：只要记过视频就恢复它（含「暂停时退出」的情况）——上次在播就自动播，
+        // 上次是暂停的就加载回原位但保持暂停，避免重启后视频丢失、点播放变成从列表重选。
+        if (st.resume && s.bvid) {
           st.pendingSeek = num(s.time, 0, 0, 1e9)
+          var wasPlaying = s.playing === true
           global.setTimeout(function () {
-            loadAndPlay(s.bvid)
+            loadAndPlay(s.bvid, { autoPlay: wasPlaying })
           }, 60)
         }
       },
