@@ -1266,7 +1266,8 @@
     if (dlTaskId) return
     if (dlBtn !== null) dlBtn.disabled = true
     dlPrev = { at: 0, received: 0 } // 重置速度基准，避免沿用上一次下载的数字
-    setDownloadLine('正在发起下载…', '')
+    // 宿主会弹 Windows「另存为」（默认目录=系统下载目录），用户确认后才开始下载。
+    setDownloadLine('请在弹出的窗口选择保存位置…', '')
     fetchJson(ROUTES.download.create, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1275,6 +1276,12 @@
       function (data) {
         if (!data || data.ok !== true) {
           setDownloadLine((data && data.error) || '下载请求失败', 'error')
+          syncDownloadButton()
+          return
+        }
+        if (data.cancelled === true) {
+          // 用户在保存框点了取消：不算错误，安静回到可再次点击的状态。
+          setDownloadLine('已取消（未下载）', '')
           syncDownloadButton()
           return
         }

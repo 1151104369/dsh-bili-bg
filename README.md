@@ -22,8 +22,10 @@
   - 背景：**保留**（透出 dsh-video-skin / 主题背景）/ **留空**
   - 界面不透明度、蒙版浓度
 - **清屏**：只隐藏中间会话内容区，左侧会话/任务列表保持可见可点；点左侧任意会话会自动恢复并切换
-- **下载当前视频**：控制面板里一键把正在播的视频存成 mp4（流式写盘、显示进度/保存路径/失败原因），
-  存到 `Downloads/DSH-B站背景/`（系统下载目录不存在时退回 `$DSH_HOME/downloads`）
+- **下载当前视频**：控制面板里一键把正在播的视频存成 mp4；点击后弹 **Windows「另存为」对话框**
+  （默认目录=注册表 KnownFolder 解析的系统下载目录，如 `F:\Downloads`；默认文件名=标题-BV号.mp4），
+  你确认存在哪里就下到哪里，取消则不下载；弹不出对话框时回退自动保存到 `Downloads/DSH-B站背景/`
+  （系统下载目录不存在时退 `$DSH_HOME/downloads`）。流式写 .part 原子落地，面板显示进度/速度/结果
 - **记住播放进度**：每 5 秒 + 暂停/关闭页面时保存；上次在播的话，重启后自动接着播（无手势时浏览器会静音，点 🔊 开声音）
 - 快捷键 `Ctrl+Shift+B` 开关面板
 
@@ -47,6 +49,7 @@ lib/auth.js         二维码登录、Cookie 持久化（收紧权限）、账�
 lib/wbi.js          WBI 签名（mixin key + w_rid，首页推荐接口必需）
 lib/qr.js           纯 Node 内建 MIT 二维码编码 + PNG 渲染（无需再登录态二维码图）
 lib/download.js     视频下载：流式写 .part → 原子 rename，并发 2、内存任务表
+lib/save-dialog.js  Windows「另存为」对话框（PowerShell + WinForms，零依赖）
 lib/injections.js   webserver/index-inject 结构化注入行
 runtime/skin.js     浏览器端：背景层 + 悬浮胶囊 + 控制面板 + 账号区 + 进度/倍速/清屏
 runtime/skin.css    样式

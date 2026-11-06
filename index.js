@@ -34,6 +34,7 @@ import {
 } from './lib/auth.js'
 import { qrPng } from './lib/qr.js'
 import { createDownloader } from './lib/download.js'
+import { pickSavePath } from './lib/save-dialog.js'
 import { BOOTSTRAP_GLOBAL, buildInjectionRows } from './lib/injections.js'
 
 export { BOOTSTRAP_GLOBAL, ROUTE_PREFIX }
@@ -394,11 +395,48 @@ export function apply(ctx) {
                     sendJson(res, 400, { ok: false, error: '需要 bvid 字段（当前播放视频的 BV 号）' })
                     return
                   }
+                  // 保存位置：body 带了显式 dir+filename（如测试/自动化）就直接用；
+                  // 否则弹 Windows「另存为」对话框（默认目录=注册表 KnownFolder 系统下载目录）。
+                  // 对话框开着时请求会挂住——这是有意的：用户确认/取消后才继续。
+                  // 客户端页面关掉（req close）→ kill 对话框进程，不留僵尸窗口。
+                  const explicitDir = typeof body.dir === 'string' ? body.dir.trim() : ''
+                  const explicitName = typeof body.filename === 'string' ? body.filename.trim() : ''
+                  const noDialog = process.env.DSH_BILI_NO_DIALOG === '1' || (explicitDir && explicitName)
+                  let dialogChild = null
+                  const onReqClose = () => {
+                    try {
+                      if (dialogChild && dialogChild.exitCode === null) dialogChild.kill()
+                    } catch {
+                      /* ignore */
+                    }
+                  }
+                  req.on('close', onReqClose)
                   downloader
-                    .startDownload(body.bvid.trim())
-                    .then((result) => sendJson(res, 200, { ok: true, id: result.id, task: result.task }))
+                    .startDownload(body.bvid.trim(), {
+                      decide: async (info) => {
+                        if (explicitDir && explicitName) return path.join(explicitDir, explicitName)
+                        if (noDialog) return ''
+                        const picked = await pickSavePath(info.defaultDir, info.filename, (child) => {
+                          dialogChild = child
+                        })
+                        if (picked === null) return '' // 弹不出保存框 → 回退默认目录自动保存
+                        if (picked === '') return 'cancelled' // 用户点了取消
+                        return picked
+                      },
+                    })
+                    .then((result) => {
+                      req.off?.('close', onReqClose)
+                      if (result && result.cancelled) {
+                        sendJson(res, 200, { ok: true, cancelled: true })
+                        return
+                      }
+                      sendJson(res, 200, { ok: true, id: result.id, task: result.task })
+                    })
                     // 解析失败 / 无播放源：422 + 可读错误，任务不落地。
-                    .catch((error) => sendJson(res, 422, { ok: false, error: describe(error) }))
+                    .catch((error) => {
+                      req.off?.('close', onReqClose)
+                      sendJson(res, 422, { ok: false, error: describe(error) })
+                    })
                 })
                 .catch((error) => sendJson(res, 400, { ok: false, error: describe(error) }))
               return
