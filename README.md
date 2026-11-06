@@ -47,9 +47,35 @@ lib/qr.js           纯 Node 内建 MIT 二维码编码 + PNG 渲染（无需再
 lib/injections.js   webserver/index-inject 结构化注入行
 runtime/skin.js     浏览器端：背景层 + 悬浮胶囊 + 控制面板 + 账号区 + 进度/倍速/清屏
 runtime/skin.css    样式
+tools/window-state.ps1  记住/恢复 DSH 主窗口大小与位置（系统级工具，不改 DSH 本体）
 tests/smoke.mjs     宿主冒烟（临时 DSH_HOME，不碰真实状态）
 tests/client.mjs    客户端 DOM stub 测试
 ```
+
+## 记住窗口大小（tools/window-state.ps1）
+
+**这不是插件能做的事**：DSH 桌面壳（`app.asar` 内 `lib/main.js` 的 `createWindow()`）把主窗口
+硬编码为 `1280x820`，既没有持久化窗口状态，也没有把窗口控制暴露给插件（preload 沙箱 + IPC 白名单）。
+所以这里提供一个**不改 DSH 任何文件**的系统级小工具（可直接停用、不随 DSH 升级丢失）：
+
+```powershell
+# 试运行一次（打印当前窗口并保存）
+pwsh -File tools/window-state.ps1 -Once
+
+# 注册登录自启（推荐；注销/重启后生效）
+pwsh -File tools/window-state.ps1 -Install
+
+# 移除自启 / 清除已保存状态
+pwsh -File tools/window-state.ps1 -Uninstall
+pwsh -File tools/window-state.ps1 -Reset
+```
+
+它每 1.5 秒检查 DSH 主窗口：你调整过大小/位置就记到
+`%LOCALAPPDATA%\DeepSeek Harness\window-state.json`；DSH 重新启动（新进程窗口）时自动恢复上次的
+尺寸与位置（含最大化状态）。状态文件与备份都在该目录，删掉即回到默认。
+
+> 若更想要「内置」体验而不介意升级后被覆盖，可以改 `app.asar` 里的 `lib/main.js` 在
+> `createWindow()` 读取/写回 bounds——但那是修改安装版程序，需关闭 DSH 并重打包 asar，风险更高。
 
 ## 已知限制
 
