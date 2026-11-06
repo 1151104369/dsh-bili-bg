@@ -16,7 +16,7 @@ process.env.DSH_HOME = TMP_HOME
 
 const { apply, VERSION } = await import('../index.js')
 const { qrPng, qrMatrix } = await import('../lib/qr.js')
-const { parsePoll } = await import('../lib/auth.js')
+const { parsePoll, saveAuth } = await import('../lib/auth.js')
 
 const routes = new Map()
 const handlers = {}
@@ -153,6 +153,17 @@ const pollOk = parsePoll(
 )
 ok('poll ok status', pollOk.status === 'ok' && pollOk.url === 'https://x/')
 ok('poll ok captures set-cookie', pollOk.setCookie.some((c) => c.name === 'SESSDATA' && c.value === 'abc123'), pollOk.setCookie)
+
+// ③ saveAuth 收紧权限后文件必须仍可读（Windows icacls 锁死凭据文件的回归）
+const RESTRICT_HOME = path.join(TMP_HOME, 'restrict-test')
+saveAuth(RESTRICT_HOME, { savedAt: 'x', cookie: 'SESSDATA=unit-test; bili_jct=j', nav: null })
+let restrictReadable = ''
+try {
+  restrictReadable = fsx.readFileSync(path.join(RESTRICT_HOME, 'dsh-bili-bg-auth.json'), 'utf8')
+} catch {
+  restrictReadable = ''
+}
+ok('auth file readable after restrict', restrictReadable.includes('SESSDATA=unit-test'))
 
 // ② 未登录时“首页推荐”应优雅返回 needAuth（不发网络请求，不报错崩）
 const feedOut = await (await fetch(base + '/dsh-bili/queue?source=feed&count=5')).json()
