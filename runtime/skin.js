@@ -180,6 +180,8 @@
   var dlStatusEl = null
   var dlTaskId = null
   var dlTimer = null
+  // 上一次轮询的 {时间, 已下载字节}，用来估算下载速度。
+  var dlPrev = { at: 0, received: 0 }
 
   // ────────────────────────────── 界面表面半透明 ──────────────────────────────
 
@@ -532,8 +534,14 @@
             st.srcAbs = data.mediaBase + src
             src = st.srcAbs
           }
-          showLayer()
-          if (layer === null) ensureLayer()
+          if (st.focusOff) {
+            // 专注模式：只加载视频，不把画面亮出来（layer 保持 data-idle=1 隐藏）。
+            if (layer === null) ensureLayer()
+            if (layer !== null) layer.setAttribute('data-idle', '1')
+          } else {
+            showLayer()
+            if (layer === null) ensureLayer()
+          }
           if (video !== null) {
             video.removeAttribute('data-shown')
             video.src = src
@@ -559,7 +567,14 @@
           }
           updateNow()
           syncButtons()
-          setStatus(autoPlay ? '正在播放' : '已恢复上次暂停的视频（点播放继续）', autoPlay ? 'ok' : '')
+          setStatus(
+            autoPlay
+              ? '正在播放'
+              : st.focusOff
+                ? '专注模式保持中（点「恢复显示」回来看）'
+                : '已恢复上次暂停的视频（点播放继续）',
+            autoPlay ? 'ok' : '',
+          )
           persist()
         },
         function (error) {
@@ -1064,6 +1079,9 @@
         if (typeof s.preserveBg === 'boolean') st.preserveBg = s.preserveBg
         st.rate = num(s.rate, st.rate, 0.25, 4)
         st.resume = s.resume !== false
+        // 专注模式（隐藏画面）也是持久状态：上次退出时开着，重启后应当保持隐藏，
+        // 而不是把画面直接亮出来。必须在 syncControls / 续播之前恢复。
+        st.focusOff = s.focusOff === true
         if (s.launcher) applyLauncherPos(s.launcher)
         if (s.bvid && inputEl) inputEl.value = s.bvid
         syncControls()
@@ -1072,13 +1090,15 @@
         applyDefaultSource()
         // 启动续播：只要记过视频就恢复它（含「暂停时退出」的情况）——上次在播就自动播，
         // 上次是暂停的就加载回原位但保持暂停，避免重启后视频丢失、点播放变成从列表重选。
+        // 专注模式下不自动播、也不显示画面（loadAndPlay 会按 st.focusOff 处理）。
         if (st.resume && s.bvid) {
           st.pendingSeek = num(s.time, 0, 0, 1e9)
-          var wasPlaying = s.playing === true
+          var wasPlaying = s.playing === true && !st.focusOff
           global.setTimeout(function () {
             loadAndPlay(s.bvid, { autoPlay: wasPlaying })
           }, 60)
         }
+        if (st.focusOff) setStatus('专注模式保持中（上次退出时开启），点「恢复显示」回来看', '')
       },
       noop,
     )
@@ -1116,7 +1136,7 @@
     return i >= 0 ? s.slice(i + 1) : s
   }
 
-  /** 进度百分比；total 不可用（<=0，可能只有时长兜底）时返回 '-'。 */
+  /** 进度百分比；total 不可用（<=0）时返回 '-'。 */
   function downloadPct(t) {
     var total = Number(t && t.total) || 0
     var received = Number(t && t.received) || 0
@@ -1127,15 +1147,47 @@
     return p
   }
 
+  /** 字节数 → 人类可读（1.2 MB / 830 KB / 512 B）。 */
+  function formatBytes(n) {
+    var v = Number(n) || 0
+    if (v <= 0) return '0 B'
+    if (v < 1024) return Math.round(v) + ' B'
+    if (v < 1024 * 1024) return (v / 1024).toFixed(1) + ' KB'
+    if (v < 1024 * 1024 * 1024) return (v / 1024 / 1024).toFixed(1) + ' MB'
+    return (v / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+  }
+
+  /**
+   * 已下载/总大小 + 速度。速度用相邻两次轮询（约 1s）的字节差估算，
+   * 首次没有基准值就不显示速度，避免给出假数字。
+   */
+  function downloadDetail(t) {
+    var received = Number(t && t.received) || 0
+    var total = Number(t && t.total) || 0
+    var now = Date.now()
+    var speed = 0
+    if (dlPrev.at > 0 && now > dlPrev.at && received >= dlPrev.received) {
+      speed = (received - dlPrev.received) / ((now - dlPrev.at) / 1000)
+    }
+    dlPrev = { at: now, received: received }
+    var text = formatBytes(received)
+    if (total > 0) text += ' / ' + formatBytes(total)
+    if (speed > 0) text += ' · ' + formatBytes(speed) + '/s'
+    return text
+  }
+
   function renderDownloadTask(t) {
     if (!t) return
-    if (t.status === 'done') setDownloadLine('已保存: ' + fileNameOf(t.path), 'ok')
-    else if (t.status === 'error') setDownloadLine('下载失败: ' + (t.error || '未知原因'), 'error')
+    if (t.status === 'done') {
+      var size = Number(t.total) > 0 ? Number(t.total) : Number(t.received) || 0
+      setDownloadLine('已保存: ' + fileNameOf(t.path) + (size > 0 ? '（' + formatBytes(size) + '）' : ''), 'ok')
+    } else if (t.status === 'error') setDownloadLine('下载失败: ' + (t.error || '未知原因'), 'error')
     else if (t.status === 'queued') setDownloadLine('排队中…', '')
     else {
-      // total 未知（还没拿到 content-length）时只显示"下载中…"，不显示假百分比。
+      // total 未知（还没拿到 content-length）时不显示假百分比，只显示已下载量与速度。
       var pct = downloadPct(t)
-      setDownloadLine(pct === '-' ? '下载中…' : '下载中 ' + pct + '%', '')
+      var detail = downloadDetail(t)
+      setDownloadLine('下载中' + (pct === '-' ? '' : ' ' + pct + '%') + ' · ' + detail, '')
     }
   }
 
@@ -1194,6 +1246,7 @@
     }
     if (dlTaskId) return
     if (dlBtn !== null) dlBtn.disabled = true
+    dlPrev = { at: 0, received: 0 } // 重置速度基准，避免沿用上一次下载的数字
     setDownloadLine('正在发起下载…', '')
     fetchJson(ROUTES.download.create, {
       method: 'POST',
@@ -1902,6 +1955,7 @@
       clear: toggleClear,
       open: openPanel,
       close: closePanel,
+      download: startDownloadCurrent,
       auth: {
         refresh: refreshAuth,
         startQr: startQrLogin,

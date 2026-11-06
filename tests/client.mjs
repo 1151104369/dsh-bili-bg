@@ -140,12 +140,14 @@ function stubFetch(url, opts) {
       payload = {
         ok: true,
         id: 'dl_1_x',
-        task: { id: 'dl_1_x', status: 'downloading', received: 0, total: 100, path: '/Downloads/x.mp4' },
+        // 带字节数，供「大小 + 速度」显示断言（1.0 MB / 4.0 MB）
+        task: { id: 'dl_1_x', status: 'downloading', received: 1048576, total: 4194304, path: '/Downloads/x.mp4' },
       }
     } else {
+      // 第二轮轮询收到更大的 received，用来验证速度估算（约 1 MB/s）
       payload = {
         ok: true,
-        task: { id: 'dl_1_x', status: 'done', received: 100, total: 100, path: '/Downloads/x.mp4' },
+        task: { id: 'dl_1_x', status: 'downloading', received: 2097152, total: 4194304, path: '/Downloads/x.mp4' },
       }
     }
   } else if (u.includes('/state')) {
@@ -313,6 +315,18 @@ const dlRow = findByClass(document.body, 'dsbili-dlrow')
 ok('download section rendered in panel body', !!dlRow && !!dlBtn && dlRow !== null)
 ok('download button enabled after current loaded', !!dlBtn && dlBtn.disabled === false)
 
+// 下载状态行要显示「大小 / 总大小」（以及后续轮询的速度）。
+api.download()
+await new Promise((r) => setTimeout(r, 80))
+const dlStatusEl = findByClass(document.body, 'dsbili-dl-status')
+const dlText = dlStatusEl ? String(dlStatusEl.textContent) : ''
+ok('download status shows received/total size', dlText.includes('1.0 MB') && dlText.includes('4.0 MB'), dlText)
+ok('download status shows percent when total known', dlText.includes('25%'), dlText)
+// 第二次轮询（约 1s 后）received 增长 → 状态行应出现速度（KB/s 或 MB/s，取决于轮询间隔）
+await new Promise((r) => setTimeout(r, 1400))
+const dlText2 = dlStatusEl ? String(dlStatusEl.textContent) : ''
+ok('download status shows speed', /(KB|MB)\/s/.test(dlText2), dlText2)
+
 // 未登录：默认来源应为「热门」
 ok('default source popular when logged out', api.state.source === 'popular', api.state.source)
 
@@ -372,6 +386,8 @@ function recoverFetch(url, opts) {
               title: '暂停的视频',
               time: 42,
               playing: false,
+              // 专注模式（隐藏画面）也要跟着重启恢复
+              focusOff: true,
               source: 'popular',
               sourcePicked: true,
               resume: true,
@@ -418,5 +434,12 @@ ok('restores last video after restart even when paused', !!recoverApi.state.curr
 ok('restored video loads its src', !!recoverVideo && String(recoverVideo.src).includes('BV1GJ411x7h7'))
 ok('restored video stays paused (not autoplayed)', !!recoverVideo && recoverVideo.paused === true && recoverApi.state.playing === false)
 ok('restored video records resume position', recoverApi.state.pendingSeek === null || recoverApi.state.pendingSeek === 42)
+// 专注模式重启恢复：状态保持 + 背景层仍是隐藏的（data-idle=1），不会把画面亮出来
+ok('focus mode restored after restart', recoverApi.state.focusOff === true)
+const recoverBackdrop = findById(recoverDoc.body, 'dsbili-backdrop')
+ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBackdrop.getAttribute('data-idle') === '1')
+
+// 清理主 runtime 的轮询定时器，否则下载轮询会让测试进程无法退出。
+api.teardown()
 
 console.log(`\n${pass} checks passed`)
