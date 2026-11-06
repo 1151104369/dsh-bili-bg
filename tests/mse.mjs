@@ -289,6 +289,40 @@ ok('exposes parse helpers', !!(dash._boxHeaderAt && dash._initEndOf && dash._med
   ok('parseSidx returns null for non-sidx', dash._parseSidx(notSidx, init.length) === null)
 }
 
+// box 切分器 / fragment 组装：任意粒度分块（包括把 mdat 从中间切断）都必须切出完整 box。
+// 回归：MSE 解析器有状态，若 append 停在 mdat 中间，下一次 append 新 moof 会 MEDIA_ERR_DECODE。
+{
+  const moof = moofWithDecode(16000 * 3)
+  const mdat = box('mdat', new Uint8Array(5000).fill(6))
+  const stream = join(moof, mdat, moof, box('mdat', new Uint8Array(700).fill(8)))
+  const boxes = []
+  const reader = dash._makeBoxReader((type, bytes) => boxes.push({ type, len: bytes.length, head: String.fromCharCode(bytes[4], bytes[5], bytes[6], bytes[7]) }))
+  // 7 字节小块喂入，强制在 box 中间断开
+  for (let p = 0; p < stream.length; p += 7) reader.feed(stream.subarray(p, Math.min(p + 7, stream.length)))
+  ok('boxReader splits complete boxes across tiny chunks', boxes.length === 4, boxes)
+  ok(
+    'boxReader box types/lengths correct',
+    boxes.length === 4 &&
+      boxes[0].type === 'moof' &&
+      boxes[1].type === 'mdat' &&
+      boxes[1].len === 8 + 5000 &&
+      boxes[2].type === 'moof' &&
+      boxes[3].type === 'mdat' &&
+      boxes[3].len === 8 + 700,
+    boxes,
+  )
+  ok('boxReader each box header matches its type', boxes.every((b) => b.head === b.type))
+
+  // reset 后丢弃半截 mdat，再喂新 moof：不得吐出残缺 fragment
+  const boxes2 = []
+  const reader2 = dash._makeBoxReader((type, bytes) => boxes2.push({ type, len: bytes.length }))
+  reader2.feed(join(moof, mdat.subarray(0, 1000))) // 只给半截 mdat
+  ok('boxReader holds incomplete mdat', boxes2.length === 1 && boxes2[0].type === 'moof', boxes2)
+  reader2.reset()
+  reader2.feed(join(moof, mdat))
+  ok('boxReader after reset emits exactly one complete fragment pair', boxes2.length === 3 && boxes2[1].type === 'moof' && boxes2[2].type === 'mdat', boxes2)
+}
+
 // ─────────────────────── 播放器装配 / 回退 ───────────────────────
 
 // supported()：无 MediaSource 应为 false
@@ -329,8 +363,9 @@ ok('supported() false without MediaSource', dash.supported() === false)
 {
   const initV = join(box('ftyp', ascii('isom')), box('moov', box('trak', box('mdia', mdhd(90000)))))
   const initA = join(box('ftyp', ascii('isom')), box('moov', box('trak', box('mdia', mdhd(48000)))))
-  const mediaV = join(moofWithDecode(90000 * 2), new Uint8Array(1024).fill(9)) // 2s
-  const mediaA = join(moofWithDecode(48000 * 2), new Uint8Array(1024).fill(5))
+  // append 以「完整 fragment(moof+mdat)」为单位，所以测试数据也要给真正的 mdat box
+  const mediaV = join(moofWithDecode(90000 * 2), box('mdat', new Uint8Array(1024).fill(9))) // 2s
+  const mediaA = join(moofWithDecode(48000 * 2), box('mdat', new Uint8Array(1024).fill(5)))
 
   const logs = { v: [], a: [] }
   let sawOpen = false
@@ -599,6 +634,152 @@ ok('supported() false without MediaSource', dash.supported() === false)
     if (savedMS2 !== undefined) globalThis.MediaSource = savedMS2
     else delete globalThis.MediaSource
     if (savedURL2 !== undefined) globalThis.URL = savedURL2
+    else delete globalThis.URL
+  }
+
+  // ── 预缓冲上限（背压）：只读到「播放头之后 horizon 秒」，不能把整条 2GB m4s 全拉进来 ──
+  // 回归：不设上限会撑爆 MSE 配额 → 反复 QuotaExceeded/remove-append → 卡顿/黑屏/降级。
+  {
+    const reads = { video: 0, audio: 0 }
+    const state = { bufferedEnd: 50, currentTime: 0 }
+    function SB3(kind) {
+      const sb = {
+        updating: false,
+        buffered: {
+          get length() {
+            return 1
+          },
+          start: () => 0,
+          end: () => state.bufferedEnd,
+        },
+        listeners: {},
+        addEventListener(t, h) {
+          ;(sb.listeners[t] = sb.listeners[t] || []).push(h)
+        },
+        removeEventListener() {},
+        abort() {
+          sb.updating = false
+        },
+        remove() {
+          sb.updating = true
+          setTimeout(() => {
+            sb.updating = false
+            ;(sb.listeners.updateend || []).forEach((h) => h())
+          }, 0)
+        },
+        appendBuffer() {
+          sb.updating = true
+          setTimeout(() => {
+            sb.updating = false
+            ;(sb.listeners.updateend || []).forEach((h) => h())
+          }, 0)
+        },
+      }
+      return sb
+    }
+    function MS3() {
+      const ms = {
+        readyState: 'open',
+        duration: NaN,
+        listeners: {},
+        addEventListener(t, h) {
+          ;(ms.listeners[t] = ms.listeners[t] || []).push(h)
+        },
+        removeEventListener() {},
+        addSourceBuffer(mime) {
+          if (mime.indexOf('video') === 0) return SB3('video')
+          return SB3('audio')
+        },
+        endOfStream() {},
+      }
+      setTimeout(() => (ms.listeners.sourceopen || []).forEach((h) => h()), 0)
+      return ms
+    }
+    const savedMS3 = globalThis.MediaSource
+    const savedURL3 = globalThis.URL
+    globalThis.MediaSource = MS3
+    globalThis.URL = { createObjectURL: () => 'blob:bp', revokeObjectURL() {} }
+
+    const initV3 = join(box('ftyp', ascii('isom')), box('moov', box('trak', box('mdia', mdhd(16000)))))
+    const chunk = join(moofWithDecode(16000 * 1), box('mdat', new Uint8Array(64).fill(4)))
+    function bodyOf(kind) {
+      let i = 0
+      return {
+        getReader() {
+          return {
+            read() {
+              reads[kind] += 1
+              if (i >= 200) return Promise.resolve({ done: true })
+              i += 1
+              return Promise.resolve({ done: false, value: Uint8Array.from(chunk) })
+            },
+            cancel() {},
+          }
+        },
+      }
+    }
+    const video3 = {
+      get currentTime() {
+        return state.currentTime
+      },
+      set currentTime(v) {
+        state.currentTime = v
+      },
+      paused: false,
+      fastSeek() {},
+      play() {},
+      set src(u) {},
+      get src() {
+        return ''
+      },
+    }
+    const player3 = dash.create({
+      video: video3,
+      duration: 100,
+      horizon: 5,
+      evictBehind: 4000, // 不触发回收，专测背压
+      tracks: {
+        video: { media: '/m?kind=video', mimeType: 'video/mp4', codecs: 'avc1.640028' },
+        audio: { media: '/m?kind=audio', mimeType: 'audio/mp4', codecs: 'mp4a.40.2' },
+      },
+      fetchFn: (url, init) => {
+        const range = String((init && init.headers && init.headers.Range) || '')
+        if (range.indexOf('bytes=0-') === 0) {
+          const initBytes = initV3
+          return Promise.resolve({
+            ok: true,
+            status: 206,
+            headers: { get: () => String(initBytes.length), has: () => true },
+            arrayBuffer: () => Promise.resolve(Uint8Array.from(initBytes)),
+          })
+        }
+        const isAudio = String(url).indexOf('audio') !== -1
+        return Promise.resolve({
+          ok: true,
+          status: 206,
+          headers: { get: () => '999999', has: () => true },
+          body: bodyOf(isAudio ? 'audio' : 'video'),
+        })
+      },
+    })
+    player3.load()
+    await sleep(120)
+    // buffered end=50，播放头 0 → 前方 50s > horizon 5s，读循环应停住
+    const vReads1 = reads.video
+    await sleep(900)
+    ok('backpressure stops reading ahead beyond horizon', reads.video - vReads1 <= 1, {
+      before: vReads1,
+      after: reads.video,
+    })
+    // 把播放头推到 47s（前方仅 3s < horizon）→ 读循环应恢复
+    state.currentTime = 47
+    const vReads2 = reads.video
+    await sleep(900)
+    ok('backpressure resumes when playhead approaches', reads.video > vReads2, { before: vReads2, after: reads.video })
+    player3.destroy()
+    if (savedMS3 !== undefined) globalThis.MediaSource = savedMS3
+    else delete globalThis.MediaSource
+    if (savedURL3 !== undefined) globalThis.URL = savedURL3
     else delete globalThis.URL
   }
 }

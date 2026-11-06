@@ -297,6 +297,106 @@
     return null
   }
 
+  /**
+   * 流式 box 切分器：把字节流切成**完整的 box**，回调 (type, bytes)。
+   *
+   * 为什么要它：MSE 的 ISO-BMFF 解析器是**有状态**的——如果 append 的字节停在某个
+   * mdat 中间，解析器会一直等这个 mdat 的剩余字节。此时若因为 seek 改去 append 另一段
+   * 从 moof 开始的字节，浏览器会把它当成上一个 mdat 的 payload → 解析错乱 →
+   * `MEDIA_ERR_DECODE`（这正是真实浏览器里「拖到远处就回退」的根因）。
+   * 所以上层只 append **完整的 fragment（moof + 后面的 mdat 一起）**，保证每次 append
+   * 结束都落在 fragment 边界上；中途 seek 时丢弃未完成的 fragment 即可。
+   */
+  function makeBoxReader(onBox) {
+    var buf = new Uint8Array(0)
+    var i = 0
+    var skip = 0
+    var MAX_BOX = 512 * 1024 * 1024
+
+    function trim() {
+      if (i <= 0) return
+      buf = buf.subarray(i)
+      i = 0
+    }
+    function feed(chunk) {
+      var c = u8(chunk)
+      if (c.length === 0) return
+      trim()
+      var next = new Uint8Array(buf.length + c.length)
+      next.set(buf, 0)
+      next.set(c, buf.length)
+      buf = next
+      process()
+    }
+    function process() {
+      for (;;) {
+        if (skip > 0) {
+          var avail = buf.length - i
+          if (avail <= 0) {
+            trim()
+            return
+          }
+          var take = skip < avail ? skip : avail
+          i += take
+          skip -= take
+          if (skip > 0) {
+            trim()
+            return
+          }
+          trim()
+          continue
+        }
+        if (buf.length - i < 8) {
+          trim()
+          return
+        }
+        var size = ((buf[i] << 24) >>> 0) + ((buf[i + 1] << 16) >>> 0) + ((buf[i + 2] << 8) >>> 0) + buf[i + 3]
+        var type = String.fromCharCode(buf[i + 4], buf[i + 5], buf[i + 6], buf[i + 7])
+        if (!isBoxType(type)) {
+          i += 1
+          trim()
+          continue
+        }
+        var header = 8
+        if (size === 1) {
+          if (buf.length - i < 16) {
+            trim()
+            return
+          }
+          header = 16
+          size = be64(buf, i + 8)
+        } else if (size === 0) {
+          size = header
+        }
+        if (size < header || size > MAX_BOX) {
+          i += 8
+          trim()
+          continue
+        }
+        if (buf.length - i < size) {
+          trim() // 等完整 box
+          return
+        }
+        var boxBytes = buf.subarray(i, i + size)
+        try {
+          onBox(type, boxBytes)
+        } catch (e) {
+          /* 回调异常不影响后续切分 */
+        }
+        i += size
+        trim()
+      }
+    }
+    return {
+      feed: feed,
+      reset: function () {
+        buf = new Uint8Array(0)
+        i = 0
+        skip = 0
+      },
+    }
+  }
+
   // ────────────────────────────── 流扫描器 ──────────────────────────────
   //
   // 一边读一边把完整 box 从字节流里剥出来：moof（小）留着解析 tfdt 建索引；
@@ -489,6 +589,19 @@
       }
       return NaN
     }
+    /** 包含时间 t 的那段 buffered range 的终点（用于「当前缓冲到哪」的背压计算）。 */
+    function bufferedRangeEndAt(ts, t) {
+      var b = bufferedOf(ts)
+      if (!b) return NaN
+      for (var i = 0; i < b.length; i += 1) {
+        try {
+          if (t >= b.start(i) - 0.25 && t <= b.end(i) + 0.001) return b.end(i)
+        } catch (e) {
+          /* ignore */
+        }
+      }
+      return NaN
+    }
     function covers(ts, t) {
       var b = bufferedOf(ts)
       if (!b) return false
@@ -589,6 +702,7 @@
         ts.scan = makeScanner(0, function (off, t) {
           ts.segIndex.push({ off: off, t: t })
         })
+        attachBoxer(ts)
         wireSourceBuffer(ts)
         state[kind] = ts
       }
@@ -612,7 +726,14 @@
         }
       })
       ts.sb.addEventListener('error', function () {
-        if (!destroyed) fail('SourceBuffer 解码出错')
+        if (!destroyed) {
+          fail(
+            'SourceBuffer 解码出错（' +
+              ts.kind +
+              (ts.lastAppend ? '，box=' + ts.lastAppend.box + '，len=' + ts.lastAppend.len + '，from=' + ts.lastAppend.from : '') +
+              '）',
+          )
+        }
       })
     }
 
@@ -626,6 +747,13 @@
       if (ts.appendBusy || ts.appendQueue.length === 0 || ts.sb.updating) return
       ts.appendBusy = true
       var bytes = ts.appendQueue.shift()
+      ts.appendCount = (ts.appendCount || 0) + 1
+      ts.lastAppend = {
+        len: bytes.length,
+        box: boxTypeAt(bytes, 0),
+        at: Date.now(),
+        from: ts.lastFetchFrom || 0,
+      }
       try {
         ts.sb.appendBuffer(bytes)
         ts.firstAppend = true
@@ -639,8 +767,13 @@
           })
           return
         }
-        fail('append 失败：' + msgOf(e))
+        fail('append 失败（' + ts.kind + '，box=' + ts.lastAppend.box + '，from=' + ts.lastAppend.from + '）：' + msgOf(e))
       }
+    }
+    /** 读 bytes[0] 处的 box 类型（排障用）。 */
+    function boxTypeAt(bytes, off) {
+      if (!bytes || bytes.length < off + 8) return '?'
+      return String.fromCharCode(bytes[off + 4], bytes[off + 5], bytes[off + 6], bytes[off + 7])
     }
     function whenAppendsSettled(ts) {
       return new Promise(function (resolve) {
@@ -653,35 +786,61 @@
     }
 
     // ── 配额 / 对称回收 ──
-    function evictSymmetrically(done) {
-      var cur = currentTime()
-      var pending = 0
-      var finished = 0
-      function onDone() {
-        finished += 1
-        if (finished >= pending) {
-          if (typeof done === 'function') done()
+    /** 等 SourceBuffer 空闲（没有 append/remove 在进行）。 */
+    function whenIdle(ts) {
+      if (!ts.sb.updating) return Promise.resolve()
+      return new Promise(function (resolve) {
+        ts.drainResolvers.push(resolve)
+      })
+    }
+    /** 安全 remove：先等空闲再删，删完等 updateend。两轨用同一时间窗调用 → 对称。 */
+    function removeRange(ts, a, b) {
+      if (!(b > a)) return Promise.resolve()
+      return whenIdle(ts).then(function () {
+        try {
+          ts.sb.remove(a, b)
+        } catch (e) {
+          return undefined
         }
+        return waitDrain(ts)
+      })
+    }
+
+    /**
+     * 对称回收：两轨都只保留「播放点前 evictBehind 秒 ~ 后 horizon*2 秒」的窗口。
+     * 既清掉播过的旧数据，也清掉 seek 后遗留在远处的旧 range（否则多次拖动后会累积占内存）。
+     * 正在 seek（pendingSeek 未落）时跳过，避免把刚回填的目标分片删掉。
+     */
+    function evictSymmetrically(done) {
+      if (destroyed) {
+        if (typeof done === 'function') done()
+        return
       }
+      if (seeking || pendingSeek !== null) {
+        if (typeof done === 'function') done()
+        return
+      }
+      var cur = currentTime()
+      var lo = Math.max(0, cur - evictBehind)
+      var hi = cur + Math.max(horizon * 2, 240)
+      var jobs = []
       for (var i = 0; i < order.length; i += 1) {
         var ts = state[order[i]]
         if (!ts) continue
         var endB = bufferedEnd(ts)
         if (!isFinite(endB) || endB <= 0) continue
-        var keepFrom = Math.max(cur - evictBehind, 0)
-        if (keepFrom >= endB) continue
-        pending += 1
-        try {
-          ts.sb.remove(0, keepFrom)
-          // remove 异步完成（updateend），挂在已经有的 drain 上
-          waitDrain(ts).then(onDone)
-        } catch (e) {
-          onDone()
-        }
+        if (lo > 0.5) jobs.push(removeRange(ts, 0, lo))
+        if (endB > hi + 1) jobs.push(removeRange(ts, hi, endB))
       }
-      if (pending === 0) {
+      if (!jobs.length) {
         if (typeof done === 'function') done()
+        return
       }
+      Promise.all(jobs)
+        .catch(noop)
+        .then(function () {
+          if (typeof done === 'function') done()
+        })
     }
     function waitDrain(ts) {
       return new Promise(function (resolve) {
@@ -781,6 +940,7 @@
       var token = (ts.fetchToken || 0) + 1
       ts.fetchToken = token
       ts.fetchActive = true
+      ts.lastFetchFrom = fromOffset
       return fetchOnce(ts.spec.media, {
         cache: 'no-store',
         headers: { Range: 'bytes=' + fromOffset + '-' },
@@ -848,6 +1008,16 @@
       }
       function step() {
         if (stale()) return
+        // 背压：只预缓冲「当前时间之后 horizon 秒」。B 站单个 m4s 覆盖整支视频（可达 GB 级），
+        // 若不顾一切往下读，浏览器 MSE 配额很快耗尽 → QuotaExceeded/反复 remove-append →
+        // 卡顿、黑屏、甚至 SourceBuffer 报错降级。用「包含播放头(或待跳转点)的那段 buffered 的
+        // 终点」判断前方还有多少，避免 seek 后留下远处旧缓冲导致误判。
+        var anchor = pendingSeek !== null ? pendingSeek : currentTime()
+        var endAt = bufferedRangeEndAt(ts, anchor)
+        if (isFinite(endAt) && endAt - anchor > horizon) {
+          global.setTimeout(step, 700)
+          return
+        }
         ts.reader.read().then(
           function (r) {
             if (stale()) return
@@ -876,11 +1046,43 @@
       if (destroyed || !bytes || bytes.length === 0) return
       ts.bytesFetched += bytes.length
       try {
-        ts.scan.feed(bytes)
+        ts.scan.feed(bytes) // 建 moof 时间索引（seek 用）
       } catch (e) {
         /* 索引失败不影响播放 */
       }
-      enqueueAppend(ts, bytes)
+      // append 走「完整 fragment」组装器：只在 moof + 其 mdat 齐了才整段 append。
+      try {
+        ts.boxer.feed(bytes)
+      } catch (e) {
+        /* ignore */
+      }
+    }
+
+    /** 把一条轨的 box 流组装成 fragment（moof + mdat），整段 append。 */
+    function attachBoxer(ts) {
+      var frag = null
+      function flushIfAny() {
+        if (!frag || !frag.mdat) return
+        var total = frag.moof.length + frag.mdat.length
+        var out = new Uint8Array(total)
+        out.set(frag.moof, 0)
+        out.set(frag.mdat, frag.moof.length)
+        frag = null
+        enqueueAppend(ts, out)
+      }
+      ts.boxer = makeBoxReader(function (type, boxBytes) {
+        if (type === 'moof') {
+          frag = { moof: Uint8Array.from(boxBytes), mdat: null }
+          return
+        }
+        if (type === 'mdat') {
+          if (!frag) return // 没有对应 moof 的孤立 mdat：丢弃
+          frag.mdat = Uint8Array.from(boxBytes)
+          flushIfAny()
+          return
+        }
+        // sidx / styp / emsg / prft / free 等：不需要 append（MSE 只需要 init + 媒体分片）
+      })
     }
 
     // ── 加载入口 ──
@@ -989,14 +1191,14 @@
         if (queuedSeek !== null) global.setTimeout(runSeek, 0)
         return
       }
-      // 硬 seek：两轨对称 flush + 从目标前最近的关键帧字节偏移重填
+      // 未缓冲：两轨都从目标分片重新拉取（不清空已有 buffer，见 refillTrack）
       seeking = true
       pendingSeek = target
       var v = state.video
       var a = state.audio
       var waits = []
-      waits.push(restartTrack(v, target))
-      if (a) waits.push(restartTrack(a, target))
+      waits.push(refillTrack(v, target))
+      if (a) waits.push(refillTrack(a, target))
       Promise.all(waits)
         .catch(noop)
         .then(function () {
@@ -1033,13 +1235,18 @@
     }
 
     /**
-     * 硬 seek 的整条轨重建：先按旧索引算出回填偏移（在清空索引**之前**），
-     * 停旧流 → 对称 flush（remove 整条）→ 重 app init → 从偏移起重拉媒体。
+     * seek 到未缓冲区域的回填。**不做整条 flush / abort / 重放 init**——早先那样做在真实
+     * 浏览器里会引发 remove 与 append 竞争、重复 init、清空 buffer 后画面变黑再等到数据：
+     * 表现为「拖动后长时间没画面，恢复后还停在旧进度」，甚至 SourceBuffer 报错触发降级。
+     *
+     * 现在保留已缓冲数据，只做三件事：
+     *   ① 停掉旧流（令牌自增，旧回调全部失效，不会误报“下载中断”）；
+     *   ② 用 sidx/索引精确定位目标分片的字节偏移；
+     *   ③ 从该偏移重新流式拉取并 append（MSE 允许乱序/不连续 append，会自己建新 buffer range）。
+     * 目标点被缓冲覆盖后由 updateend 里的 applyPendingSeek 把 currentTime 落到目标。
      */
-    function restartTrack(ts, target) {
+    function refillTrack(ts, target) {
       if (!ts) return Promise.resolve()
-      var refill = refillOffset(ts, target)
-      // 停旧读循环（令牌递增让旧循环/旧请求的回调全部失效，绝不误判成“下载中断”去降级）
       try {
         if (ts.reader) ts.reader.cancel && ts.reader.cancel()
       } catch (e) {
@@ -1049,55 +1256,20 @@
       ts.fetchToken = (ts.fetchToken || 0) + 1
       ts.fetchActive = false
       ts.appendQueue = []
-      ts.drainResolvers = []
       ts.readDone = false
-      // 先中止正在进行的 append/remove，避免 remove 抛 InvalidStateError 后我们还重复 append init
-      try {
-        if (ts.sb.updating) ts.sb.abort()
-      } catch (e) {
-        /* ignore */
-      }
-      ts.appendBusy = false
-      // 对称 flush
-      var hadBuffered = isFinite(bufferedEnd(ts)) && bufferedEnd(ts) > 0
-      if (hadBuffered) {
-        try {
-          ts.sb.remove(0, bufferedEnd(ts))
-        } catch (e) {
-          hadBuffered = false
-        }
-      }
-      // 顺序必须是：remove 收尾 → 重放 init → 从回填点拉媒体分片。
-      // 早先把 init 在 remove 之前就入队，连续 seek 时会和 remove 竞争、重复 init。
-      var gate = hadBuffered ? waitDrain(ts) : whenAppendsSettled(ts)
-      return gate
-        .then(function () {
-          if (destroyed) return
-          if (!ts.initBytes) return
-          enqueueAppend(ts, ts.initBytes)
-          return whenAppendsSettled(ts)
-        })
-        .then(function () {
-          if (destroyed) return
-          if (refill.exact) {
-            resetScanner(ts, refill.offset)
-            startTrackFetch(ts, refill.offset)
-            return
-          }
-          // 只有估算偏移：先探一小段、在真实字节里找最近的 moof 边界，避免落在 mdat 中间
-          // 导致 append 出坏数据。找不到就退回估算值，至少不崩。
-          return probeMoofBoundary(ts, refill.offset, target)
-            .then(function (offset) {
-              if (destroyed) return
-              resetScanner(ts, offset)
-              startTrackFetch(ts, offset)
-            })
-            .catch(function () {
-              if (destroyed) return
-              resetScanner(ts, refill.offset)
-              startTrackFetch(ts, refill.offset)
-            })
-        })
+      // 丢弃未组装完的 fragment，保证下一次 append 一定从完整 fragment 边界开始。
+      if (ts.boxer) ts.boxer.reset()
+      var refill = refillOffset(ts, target)
+      var pick = refill.exact
+        ? Promise.resolve(refill.offset)
+        : probeMoofBoundary(ts, refill.offset, target).catch(function () {
+            return refill.offset
+          })
+      return pick.then(function (offset) {
+        if (destroyed) return
+        resetScanner(ts, offset)
+        startTrackFetch(ts, offset)
+      })
     }
 
     /**
@@ -1128,9 +1300,14 @@
       var t = pendingSeek
       pendingSeek = null
       try {
-        video.fastSeek ? video.fastSeek(t) : (video.currentTime = t)
+        // 用 currentTime 精确定位（两轨在同一 media element 上，会一起跳转，天然同步）。
+        video.currentTime = t
       } catch (e) {
-        /* ignore */
+        try {
+          video.fastSeek ? video.fastSeek(t) : (video.currentTime = t)
+        } catch (e2) {
+          /* ignore */
+        }
       }
     }
 
@@ -1171,6 +1348,26 @@
     return {
       load: load,
       seek: seekTo,
+      /** 排障快照：各轨最近 append / 拉取偏移 / buffer 区间（诊断用，勿依赖）。 */
+      diag: function () {
+        var out = {}
+        for (var i = 0; i < order.length; i += 1) {
+          var ts = state[order[i]]
+          if (!ts) continue
+          out[ts.kind] = {
+            appends: ts.appendCount || 0,
+            lastAppend: ts.lastAppend || null,
+            lastFetchFrom: ts.lastFetchFrom || 0,
+            bytesFetched: ts.bytesFetched || 0,
+            bufferedEnd: bufferedEnd(ts),
+            initEnd: ts.initEnd,
+            sidx: ts.sidx ? ts.sidx.entries.length : 0,
+          }
+        }
+        out.pendingSeek = pendingSeek
+        out.seeking = seeking
+        return out
+      },
       play: function () {
         try {
           if (video) video.play()
@@ -1226,6 +1423,7 @@
     _mediaTimescaleOf: mediaTimescaleOf,
     _moofDecodeTime: moofDecodeTime,
     _makeScanner: makeScanner,
+    _makeBoxReader: makeBoxReader,
     _findMoofBoundary: findMoofBoundary,
     _parseSidx: parseSidx,
     _sidxOffsetFor: sidxOffsetFor,

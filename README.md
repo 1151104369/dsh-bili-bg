@@ -38,8 +38,10 @@
   - 可选的**分轨清晰度**按钮（1080P / 720P / 480P / 360P…）。B 站同一清晰度会返回
     avc1/hvc1/av01 多条编码，界面**按高度去重**，并自动优选浏览器 MSE 支持、H.264 优先的编码。
   - **切换高清/清晰度会保住当前进度**（不会从头播）；播放结束自动回开头续播（背景不断流）。
-  - 拖动进度条：拖动中只更新文案，**松手才做一次两轨对称 seek**（避免连续 flush 撞车）；seek 地址由
-    分轨的 `sidx` 索引精确算出字节偏移（不必估算/探测），暂停、倍速、清屏/专注下两轨共用 media element 时钟。
+  - 拖动进度条：拖动中只更新文案，**松手才做一次两轨对称 seek**；seek 地址由分轨的 `sidx`
+    索引精确算出字节偏移，远距离/来回拖动都能落到目标（真实浏览器实测 600/1800/300/7155/60/3600s
+    全部命中）。append 以**完整 fragment（moof+mdat）**为单位，避免停在 mdat 中间导致
+    `MEDIA_ERR_DECODE`；只预缓冲前方 90s、播放点后保留 30s，长时间播放不会撑爆 MSE 配额。
   - **画质降级开关**：关闭「高清」立即回到 720p 单文件；MSE 不可用/失败/超时（20s）时宿主自动回退
     720p 单文件并**把高清开关自动关掉**（避免「已开 + 已回退」自相矛盾），**绝不白屏、也不会停在
     “播放中”却没画面**（等 MSE 真正就绪才显示“高清播放中”）。
@@ -83,6 +85,10 @@ tests/mse.mjs       MSE 播放器单测（ISO-BMFF 解析 + 装配/回退）
 - MSE 取分轨走 fetch（跨源直连 127.0.0.1，带 `Range` 会触发 CORS 预检）。宿主 /media 路由必须
   正确应答 `OPTIONS`（204 + `Access-Control-Allow-Headers: Range`）并给 GET 加 `ACAO`；
   否则浏览器 fetch 会一直挂住，表现为「提示高清播放中但画面永远不出来」。已修复并有回归测试。
+- MSE append 必须按**完整 fragment**（moof+mdat）提交。若把字节流切在 mdat 中间就 append 新的
+  moof，浏览器解析器会 `MEDIA_ERR_DECODE`（真机复现过）。`runtime/dash.js` 里的 box 切分器负责
+  保证这一点；seek 时丢弃未组装完的半截 fragment。
+- 高清诊断：最近一次 MSE 状态/回退原因会写进 `state.hdDiag`（重启/排障可看）。
 - 播放流经本地代理（带 `Referer` + `Range`）。Electron 的 `dsh-app://` 转发层会丢掉 `Content-Length`，会让 `<video>` 无法 seek，所以客户端优先**直连本机 HTTP**、失败再回退代理；MSE 取分轨也是直连 + 断线回退同源代理。
 - 清屏依赖 `dsh-client-ui-layout` 的类名（匹配 `[class*="centerCol"]` / `[class*="sidebarCol"]`）。
 - 仅面向 desktop profile（Electron 桌面壳）。

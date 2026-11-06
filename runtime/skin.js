@@ -142,6 +142,8 @@
     hd: false,
     hdEffective: false,
     hdFallback: '',
+    // MSE 诊断：最近一次状态/回退原因（落盘到 state，排障用）。
+    hdDiag: null,
     hdQuality: 80, // 请求 qn.cn（1080P ~ 116）
     dashVideoIndex: 0,
     dashAudioIndex: 0,
@@ -681,6 +683,9 @@
       video: video,
       duration: st.duration,
       tracks: tracks,
+      // 只预缓冲前方 90s、播放点后保留 30s：B 站单条 m4s 可达数 GB，不设上限会撑爆 MSE 配额。
+      horizon: 90,
+      evictBehind: 30,
       fetchFn: function (url, init) {
         var rel = url === vAbs ? vRel : url === aAbs ? aRel : null
         return global
@@ -693,10 +698,12 @@
       },
       onFallback: function (reason) {
         st.hdFallback = reason || 'MSE 回退'
+        st.hdDiag = { reason: st.hdFallback, status: 'fallback', at: Date.now() }
         degradeTo720p(st.hdFallback)
       },
       onStatus: function (s) {
         if (destroyedFlag()) return
+        st.hdDiag = { status: s, reason: st.hdDiag ? st.hdDiag.reason : '', at: Date.now() }
         if (s === 'ready') {
           st.hdEffective = true
           switchingSrc = false
@@ -766,6 +773,8 @@
       switchingSrc = true
       loadAndPlay(st.current.bvid, { autoPlay: st.playing === true, hd: false })
     }
+    // 把回退原因落盘（state.hdDiag），重启/排障时能直接看到卡在哪一步。
+    persist()
     resetDegrading()
   }
   /** 回退是异步重载，给一个小延迟再允许下一次回退，避免同一轮错误风暴里反复重载。 */
@@ -1469,6 +1478,8 @@
       // 高清开关与清晰度选择要跨重启记住（登录态下才生效）。
       hd: st.hd === true,
       hdQuality: st.hdQuality,
+      // MSE 诊断（排障用：最近状态 + 回退原因）。
+      hdDiag: st.hdDiag || null,
       bvid: st.current && st.current.bvid ? st.current.bvid : '',
       title: st.current && st.current.title ? st.current.title : '',
       playing: st.playing === true,
