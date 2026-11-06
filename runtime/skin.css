@@ -633,3 +633,18 @@ body:not([data-ds-dark-theme]) .dsbili-item:hover {
   font-size: 11px;
   opacity: 0.6;
 }
+
+/* ─────────────────────────── ④ 下载当前视频 ───────────────────────────
+ * 与其它 .dsbili-row 同款排版：标题行 + 一个通栏按钮 + 一行下载状态。
+ * 宿主没注册 download 路由时按钮被禁用，这一行仍保持对齐不塌。 */
+.dsbili-dlrow {
+  gap: 4px;
+}
+
+.dsbili-dlrow .dsbili-btn {
+  width: 100%;
+}
+
+.dsbili-dl-status {
+  min-height: 16px;
+}

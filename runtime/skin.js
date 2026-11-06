@@ -43,6 +43,13 @@
           logout: str(cfg.auth.logout),
         }
       : null
+  ROUTES.download = isObj(cfg.download)
+    ? {
+        create: str(cfg.download.create),
+        status: str(cfg.download.status),
+        list: str(cfg.download.list),
+      }
+    : null
 
   // ────────────────────────────── 小工具 ──────────────────────────────
 
@@ -169,6 +176,10 @@
   var srcFeed = null
   var qrPollTimer = null
   var qrPollTries = 0
+  var dlBtn = null
+  var dlStatusEl = null
+  var dlTaskId = null
+  var dlTimer = null
 
   // ────────────────────────────── 界面表面半透明 ──────────────────────────────
 
@@ -1083,6 +1094,133 @@
     }
   }
 
+  // ────────────────────────────── 下载当前视频 ──────────────────────────────
+  // 宿主注册了 download 路由才可用（ROUTES.download 缺失时按钮禁用、调用优雅返回）。
+
+  function dlAvailable() {
+    return !!(ROUTES.download && (ROUTES.download.create || ROUTES.download.status))
+  }
+
+  function setDownloadLine(text, level) {
+    if (dlStatusEl !== null) {
+      dlStatusEl.textContent = text
+      dlStatusEl.setAttribute('data-level', level || '')
+    }
+  }
+
+  /** 取路径里的文件名（兼容 / 与 \）。 */
+  function fileNameOf(p) {
+    if (!p) return ''
+    var s = String(p)
+    var i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'))
+    return i >= 0 ? s.slice(i + 1) : s
+  }
+
+  /** 进度百分比；total 不可用（<=0，可能只有时长兜底）时返回 '-'。 */
+  function downloadPct(t) {
+    var total = Number(t && t.total) || 0
+    var received = Number(t && t.received) || 0
+    if (total <= 0) return '-'
+    var p = Math.floor((received / total) * 100)
+    if (p < 0) p = 0
+    if (p > 100) p = 100
+    return p
+  }
+
+  function renderDownloadTask(t) {
+    if (!t) return
+    if (t.status === 'done') setDownloadLine('已保存: ' + fileNameOf(t.path), 'ok')
+    else if (t.status === 'error') setDownloadLine('下载失败: ' + (t.error || '未知原因'), 'error')
+    else if (t.status === 'queued') setDownloadLine('排队中…', '')
+    else {
+      // total 未知（还没拿到 content-length）时只显示"下载中…"，不显示假百分比。
+      var pct = downloadPct(t)
+      setDownloadLine(pct === '-' ? '下载中…' : '下载中 ' + pct + '%', '')
+    }
+  }
+
+  function stopDownloadPoll() {
+    if (dlTimer !== null) {
+      try {
+        global.clearTimeout(dlTimer)
+      } catch (e) {
+        /* ignore */
+      }
+      dlTimer = null
+    }
+  }
+
+  /** 下载期间约每秒轮询一次宿主，done/error 后停。 */
+  function pollDownload() {
+    if (!dlTaskId || !ROUTES.download || !ROUTES.download.status) return
+    stopDownloadPoll()
+    dlTimer = global.setTimeout(function () {
+      dlTimer = null
+      fetchJson(ROUTES.download.status + '?id=' + encodeURIComponent(dlTaskId), { cache: 'no-store' }).then(
+        function (data) {
+          if (!dlTaskId) return
+          if (!data || data.ok !== true) {
+            setDownloadLine((data && data.error) || '查询下载状态失败', 'error')
+            dlTaskId = null
+            syncDownloadButton()
+            return
+          }
+          renderDownloadTask(data.task || {})
+          var s = data.task && data.task.status
+          if (s === 'downloading' || s === 'queued') pollDownload()
+          else if (s === 'done' || s === 'error') {
+            dlTaskId = null
+            syncDownloadButton()
+          }
+        },
+        function () {
+          if (!dlTaskId) return
+          dlTaskId = null
+          setDownloadLine('查询下载状态失败', 'error')
+          syncDownloadButton()
+        },
+      )
+    }, 1000)
+  }
+
+  function startDownloadCurrent() {
+    if (!dlAvailable()) {
+      setDownloadLine('当前环境不支持下载', 'error')
+      return
+    }
+    if (!st.current || !st.current.bvid) {
+      setDownloadLine('当前没有可下载的视频', 'error')
+      return
+    }
+    if (dlTaskId) return
+    if (dlBtn !== null) dlBtn.disabled = true
+    setDownloadLine('正在发起下载…', '')
+    fetchJson(ROUTES.download.create, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bvid: st.current.bvid }),
+    }).then(
+      function (data) {
+        if (!data || data.ok !== true) {
+          setDownloadLine((data && data.error) || '下载请求失败', 'error')
+          syncDownloadButton()
+          return
+        }
+        dlTaskId = data.id
+        renderDownloadTask(data.task)
+        pollDownload()
+      },
+      function (error) {
+        setDownloadLine('下载请求失败：' + (error && error.message ? error.message : error), 'error')
+        syncDownloadButton()
+      },
+    )
+  }
+
+  function syncDownloadButton() {
+    if (dlBtn !== null) dlBtn.disabled = !dlAvailable() || !st.current || !!dlTaskId
+  }
+
   function updateNow() {
     if (titleEl !== null) {
       titleEl.textContent = st.current ? st.current.title || '（无标题）' : '未播放'
@@ -1134,6 +1272,7 @@
     if (volRange !== null) volRange.value = String(Math.round(st.volume * 100))
     if (surfaceRange !== null) surfaceRange.value = String(Math.round(st.surface * 100))
     if (veilRange !== null) veilRange.value = String(Math.round(st.veil * 100))
+    syncDownloadButton()
   }
 
   function syncControls() {
@@ -1429,6 +1568,20 @@
     progRow.appendChild(progHead)
     progRow.appendChild(progressRange)
     bodyEl.appendChild(progRow)
+
+    // 下载当前视频：宿主有 download 路由才可用，否则按钮禁用（清晰回退）。
+    var dlRow = el('div', 'dsbili-row dsbili-dlrow')
+    var dlHead = el('div', 'dsbili-rowhead')
+    dlHead.appendChild(el('span', null, '下载当前视频'))
+    dlBtn = el('button', 'dsbili-btn', '⬇ 下载当前')
+    dlBtn.id = 'dsbili-dl-btn'
+    dlBtn.addEventListener('click', startDownloadCurrent)
+    dlStatusEl = el('div', 'dsbili-status dsbili-dl-status', '未开始')
+    dlStatusEl.setAttribute('data-level', '')
+    dlRow.appendChild(dlHead)
+    dlRow.appendChild(dlBtn)
+    dlRow.appendChild(dlStatusEl)
+    bodyEl.appendChild(dlRow)
 
     // 播放控制
     var row1 = el('div', 'dsbili-btnrow')
@@ -1756,6 +1909,7 @@
         logout: doLogout,
       },
       teardown: function () {
+        stopDownloadPoll()
         hideLayer()
         if (layer && layer.parentNode) layer.parentNode.removeChild(layer)
         if (panel && panel.parentNode) panel.parentNode.removeChild(panel)

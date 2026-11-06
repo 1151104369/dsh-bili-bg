@@ -33,6 +33,7 @@ import {
   buildCookieHeader,
 } from './lib/auth.js'
 import { qrPng } from './lib/qr.js'
+import { createDownloader } from './lib/download.js'
 import { BOOTSTRAP_GLOBAL, buildInjectionRows } from './lib/injections.js'
 
 export { BOOTSTRAP_GLOBAL, ROUTE_PREFIX }
@@ -54,12 +55,15 @@ const AUTH_QR_ROUTE = `${ROUTE_PREFIX}/auth/qr`
 const AUTH_POLL_ROUTE = `${ROUTE_PREFIX}/auth/poll`
 const AUTH_STATUS_ROUTE = `${ROUTE_PREFIX}/auth/status`
 const AUTH_LOGOUT_ROUTE = `${ROUTE_PREFIX}/auth/logout`
+const DOWNLOAD_ROUTE = `${ROUTE_PREFIX}/download`
+const DOWNLOADS_ROUTE = `${ROUTE_PREFIX}/downloads`
 
 /** 已生成、尚未扫码/未过期的二维码内容（按 qrcode_key 索引，仅内存，随扫码/过期清理）。 */
 const pendingQrs = new Map()
 
 const STATE_FILE = 'dsh-bili-bg.json'
 const STATE_BODY_LIMIT = 64 * 1024
+const DOWNLOAD_BODY_LIMIT = 16 * 1024
 const RUNTIME_DIR = 'runtime'
 
 function describe(error) {
@@ -162,6 +166,7 @@ function parseUrl(req) {
 export function apply(ctx) {
   const packageRoot = fileURLToPath(new URL('.', import.meta.url))
   const homeDir = resolveDshHome()
+  const downloader = createDownloader(homeDir)
   const stateFile = path.join(homeDir, STATE_FILE)
   const readRuntime = makeRuntimeReader(packageRoot)
 
@@ -194,6 +199,11 @@ export function apply(ctx) {
       poll: AUTH_POLL_ROUTE,
       status: AUTH_STATUS_ROUTE,
       logout: AUTH_LOGOUT_ROUTE,
+    },
+    download: {
+      create: DOWNLOAD_ROUTE,
+      status: DOWNLOAD_ROUTE,
+      list: DOWNLOADS_ROUTE,
     },
     defaults: {
       source: 'popular',
@@ -359,6 +369,75 @@ export function apply(ctx) {
             fetchQueue(source, count, cookie)
               .then((result) => sendJson(res, 200, { ok: true, ...result }))
               .catch((error) => sendJson(res, 502, { ok: false, error: describe(error) }))
+          },
+        }),
+      )
+
+      // 下载当前视频：POST 发起（body {bvid}），GET 按 ?id= 查任务状态。
+      disposers.push(
+        child.webServer.register({
+          kind: 'exact',
+          path: DOWNLOAD_ROUTE,
+          handler: (req, res) => {
+            const method = String(req.method ?? 'GET').toUpperCase()
+            if (method === 'POST') {
+              readBody(req, DOWNLOAD_BODY_LIMIT)
+                .then((text) => {
+                  let body
+                  try {
+                    body = JSON.parse(text)
+                  } catch (error) {
+                    sendJson(res, 400, { ok: false, error: `无效的 JSON：${describe(error)}` })
+                    return
+                  }
+                  if (!body || typeof body !== 'object' || typeof body.bvid !== 'string' || !body.bvid.trim()) {
+                    sendJson(res, 400, { ok: false, error: '需要 bvid 字段（当前播放视频的 BV 号）' })
+                    return
+                  }
+                  downloader
+                    .startDownload(body.bvid.trim())
+                    .then((result) => sendJson(res, 200, { ok: true, id: result.id, task: result.task }))
+                    // 解析失败 / 无播放源：422 + 可读错误，任务不落地。
+                    .catch((error) => sendJson(res, 422, { ok: false, error: describe(error) }))
+                })
+                .catch((error) => sendJson(res, 400, { ok: false, error: describe(error) }))
+              return
+            }
+            if (method !== 'GET') {
+              sendJson(res, 405, { ok: false, error: 'use GET/POST' })
+              return
+            }
+            const url = parseUrl(req)
+            const id = url.searchParams.get('id') || ''
+            if (!id) {
+              sendJson(res, 400, { ok: false, error: '需要 id 参数' })
+              return
+            }
+            const task = downloader.getDownload(id)
+            if (!task) {
+              sendJson(res, 404, { ok: false, error: '下载任务不存在' })
+              return
+            }
+            sendJson(res, 200, { ok: true, task })
+          },
+        }),
+      )
+
+      // 全部下载任务列表 + 保存目录。
+      disposers.push(
+        child.webServer.register({
+          kind: 'exact',
+          path: DOWNLOADS_ROUTE,
+          handler: (req, res) => {
+            try {
+              sendJson(res, 200, {
+                ok: true,
+                list: downloader.listDownloads(),
+                dir: downloader.getDownloadDir(),
+              })
+            } catch (error) {
+              sendJson(res, 500, { ok: false, error: describe(error) })
+            }
           },
         }),
       )

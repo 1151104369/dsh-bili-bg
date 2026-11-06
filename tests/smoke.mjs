@@ -147,6 +147,34 @@ const stPost = await (
 ).json()
 ok('state-post', stPost.ok === true && stPost.state.source === 'ranking', stPost.state)
 
+// ① config 应暴露 download 路由供客户端使用
+ok(
+  'config exposes download routes',
+  !!(cfg.download && cfg.download.create && cfg.download.status && cfg.download.list),
+  cfg.download,
+)
+
+// ② 下载：POST 缺/无效 bvid → 400 + ok:false（不发网络，保持离线/快速）
+const dlBadEmpty = await (
+  await fetch(base + '/dsh-bili/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+).json()
+ok('download missing bvid returns 400', dlBadEmpty.ok === false && typeof dlBadEmpty.error === 'string', dlBadEmpty)
+const dlBadBlank = await (
+  await fetch(base + '/dsh-bili/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"bvid":"  "}' })
+).json()
+ok('download blank bvid returns 400', dlBadBlank.ok === false && typeof dlBadBlank.error === 'string', dlBadBlank)
+
+// ③ 下载列表：ok:true，list 是数组，带 dir
+const dlList = await (await fetch(base + '/dsh-bili/downloads')).json()
+ok('downloads list ok', dlList.ok === true && Array.isArray(dlList.list) && typeof dlList.dir === 'string', {
+  n: dlList.list?.length,
+  dir: dlList.dir,
+})
+
+// ④ 下载状态：未知 id → 404 + ok:false
+const dlUnknown = await (await fetch(base + '/dsh-bili/download?id=nope')).json()
+ok('download unknown id returns 404', dlUnknown.ok === false && typeof dlUnknown.error === 'string', dlUnknown)
+
 // ① config 应暴露 auth 路由供客户端使用
 ok(
   'config exposes auth routes',

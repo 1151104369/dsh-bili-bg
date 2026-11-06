@@ -132,6 +132,22 @@ function stubFetch(url, opts) {
     payload = { ok: true, key: 'k123', image: '/dsh-bili/auth/qr?key=k123' }
   } else if (u.includes('/auth/poll')) {
     payload = { ok: true, status: 'wait', message: '等待扫码' }
+  } else if (u.includes('/downloads')) {
+    payload = { ok: true, list: [], dir: '/Downloads/DSH-B站背景' }
+  } else if (u.includes('/download')) {
+    // 先按 /download（比 /downloads 靠后判断）——注意 /downloads 在其上方。
+    if (opts && opts.method === 'POST') {
+      payload = {
+        ok: true,
+        id: 'dl_1_x',
+        task: { id: 'dl_1_x', status: 'downloading', received: 0, total: 100, path: '/Downloads/x.mp4' },
+      }
+    } else {
+      payload = {
+        ok: true,
+        task: { id: 'dl_1_x', status: 'done', received: 100, total: 100, path: '/Downloads/x.mp4' },
+      }
+    }
   } else if (u.includes('/state')) {
     if (opts && opts.method === 'POST') payload = { ok: true }
     else payload = { ok: true, state: {} }
@@ -165,6 +181,11 @@ const window = {
       poll: '/dsh-bili/auth/poll',
       status: '/dsh-bili/auth/status',
       logout: '/dsh-bili/auth/logout',
+    },
+    download: {
+      create: '/dsh-bili/download',
+      status: '/dsh-bili/download',
+      list: '/dsh-bili/downloads',
     },
     defaults: { source: 'popular', count: 12, volume: 0.8, veil: 0.32, veillight: 0.3 },
   },
@@ -284,6 +305,13 @@ ok('layout: volume/opacity rows above source switcher', idxVolume >= 0 && idxOpa
   idxSource,
 })
 ok('layout: source switcher right above list', idxSource >= 0 && idxList > idxSource, { idxSource, idxList })
+
+// ── 下载当前视频 ──
+// 面板 body 里渲染了下载区块与按钮；当前已加载视频（api.play 已设置 st.current）时按钮可用。
+const dlBtn = findById(document.body, 'dsbili-dl-btn')
+const dlRow = findByClass(document.body, 'dsbili-dlrow')
+ok('download section rendered in panel body', !!dlRow && !!dlBtn && dlRow !== null)
+ok('download button enabled after current loaded', !!dlBtn && dlBtn.disabled === false)
 
 // 未登录：默认来源应为「热门」
 ok('default source popular when logged out', api.state.source === 'popular', api.state.source)
