@@ -1259,11 +1259,15 @@
       setDownloadLine('当前环境不支持下载', 'error')
       return
     }
+    // 已有任务在跑（排队/下载中）再点 = 中途取消。
+    if (dlTaskId) {
+      cancelDownloadCurrent()
+      return
+    }
     if (!st.current || !st.current.bvid) {
       setDownloadLine('当前没有可下载的视频', 'error')
       return
     }
-    if (dlTaskId) return
     if (dlBtn !== null) dlBtn.disabled = true
     dlPrev = { at: 0, received: 0 } // 重置速度基准，避免沿用上一次下载的数字
     // 宿主会弹 Windows「另存为」（默认目录=系统下载目录），用户确认后才开始下载。
@@ -1287,6 +1291,7 @@
         }
         dlTaskId = data.id
         renderDownloadTask(data.task)
+        syncDownloadButton()
         pollDownload()
       },
       function (error) {
@@ -1296,8 +1301,39 @@
     )
   }
 
+  /** 中途取消：DELETE /download?id=；宿主断开 HTTP、清理 .part 半成品。 */
+  function cancelDownloadCurrent() {
+    if (!dlTaskId || !ROUTES.download || !ROUTES.download.status) return
+    var id = dlTaskId
+    dlTaskId = null
+    stopDownloadPoll()
+    setDownloadLine('正在取消…', '')
+    fetchJson(ROUTES.download.status + '?id=' + encodeURIComponent(id), { method: 'DELETE' }).then(
+      function (data) {
+        if (data && data.ok === true) {
+          setDownloadLine('已取消下载（半成品已清理）', '')
+        } else {
+          setDownloadLine('已取消' + (data && data.error ? '（' + data.error + '）' : ''), '')
+        }
+        syncDownloadButton()
+      },
+      function () {
+        setDownloadLine('已取消下载', '')
+        syncDownloadButton()
+      },
+    )
+  }
+
   function syncDownloadButton() {
-    if (dlBtn !== null) dlBtn.disabled = !dlAvailable() || !st.current || !!dlTaskId
+    if (dlBtn === null) return
+    // 有任务在跑 → 按钮变「取消」；否则是「下载当前」。
+    if (dlTaskId) {
+      dlBtn.textContent = '✕ 取消下载'
+      dlBtn.disabled = !dlAvailable()
+      return
+    }
+    dlBtn.textContent = '⬇ 下载当前'
+    dlBtn.disabled = !dlAvailable() || !st.current
   }
 
   function updateNow() {

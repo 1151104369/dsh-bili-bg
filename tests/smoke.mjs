@@ -13,6 +13,9 @@ import assert from 'node:assert/strict'
 // 用临时 DSH_HOME，避免冒烟测试覆盖用户真实的 dsh-bili-bg.json 状态。
 const TMP_HOME = fsx.mkdtempSync(path.join(os.tmpdir(), 'dsh-bili-bg-test-'))
 process.env.DSH_HOME = TMP_HOME
+// 下载相关：目录强制隔离到临时目录（别往用户真实的下载夹写东西）；禁用保存对话框（无头环境）。
+process.env.DSH_BILI_DOWNLOAD_DIR = path.join(TMP_HOME, 'downloads')
+process.env.DSH_BILI_NO_DIALOG = '1'
 
 const { apply, VERSION } = await import('../index.js')
 const { qrPng, qrMatrix } = await import('../lib/qr.js')
@@ -174,6 +177,42 @@ ok('downloads list ok', dlList.ok === true && Array.isArray(dlList.list) && type
 // ④ 下载状态：未知 id → 404 + ok:false
 const dlUnknown = await (await fetch(base + '/dsh-bili/download?id=nope')).json()
 ok('download unknown id returns 404', dlUnknown.ok === false && typeof dlUnknown.error === 'string', dlUnknown)
+
+// ⑤ 中途取消（真实下载一支热门里最短的视频，立刻取消）：
+//    DELETE → status 变 cancelled；.part 半成品与正式文件都不应残留。
+const qCancel = await (await fetch(base + '/dsh-bili/queue?source=popular&count=20')).json()
+const shortestCancel = (qCancel.list || []).slice().sort((a, b) => (a.duration || 0) - (b.duration || 0))[0]
+if (shortestCancel && shortestCancel.bvid) {
+  const start = await (
+    await fetch(base + '/dsh-bili/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bvid: shortestCancel.bvid }),
+    })
+  ).json()
+  if (start.ok === true && start.id) {
+    const del = await (await fetch(base + '/dsh-bili/download?id=' + encodeURIComponent(start.id), { method: 'DELETE' })).json()
+    ok('download cancel accepted', del.ok === true && del.task && (del.task.status === 'cancelled' || del.task.status === 'downloading'), del.task && del.task.status)
+    let finalTask = del.task
+    for (let i = 0; i < 20; i += 1) {
+      await new Promise((r) => setTimeout(r, 500))
+      const cur = await (await fetch(base + '/dsh-bili/download?id=' + encodeURIComponent(start.id))).json()
+      if (cur.ok === true && cur.task) {
+        finalTask = cur.task
+        if (cur.task.status === 'cancelled' || cur.task.status === 'done' || cur.task.status === 'error') break
+      }
+    }
+    ok('download cancel settles to cancelled', finalTask && finalTask.status === 'cancelled', finalTask && finalTask.status)
+    const partGone = !fsx.existsSync(finalTask.path) && !fsx.existsSync(finalTask.path + '.part')
+    ok('download cancel cleans up files', partGone, finalTask.path)
+  } else {
+    // 解析失败（如无外网）不算测试失败，只提示跳过。
+    console.log('SKIP download-cancel e2e（无法发起真实下载）:', start.error || '')
+  }
+}
+// 取消/结束后再 DELETE → 404
+const dlUnknownDel = await (await fetch(base + '/dsh-bili/download?id=definitely-not-exist', { method: 'DELETE' })).json()
+ok('download cancel unknown id returns 404', dlUnknownDel.ok === false, dlUnknownDel)
 
 // ① config 应暴露 auth 路由供客户端使用
 ok(

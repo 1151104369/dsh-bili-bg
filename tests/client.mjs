@@ -329,6 +329,13 @@ ok('download status shows percent when total known', dlText.includes('25%'), dlT
 await new Promise((r) => setTimeout(r, 1400))
 const dlText2 = dlStatusEl ? String(dlStatusEl.textContent) : ''
 ok('download status shows speed', /(KB|MB)\/s/.test(dlText2), dlText2)
+// 下载中按钮变成「取消」，再点即中途取消并恢复按钮
+ok('download button becomes cancel while running', dlBtn.textContent === '✕ 取消下载', dlBtn.textContent)
+api.download()
+await new Promise((r) => setTimeout(r, 60))
+const dlText3 = dlStatusEl ? String(dlStatusEl.textContent) : ''
+ok('mid-download cancel acknowledged', dlText3.includes('已取消下载'), dlText3)
+ok('download button restored after cancel', dlBtn.textContent === '⬇ 下载当前' && dlBtn.disabled === false)
 
 // 未登录：默认来源应为「热门」
 ok('default source popular when logged out', api.state.source === 'popular', api.state.source)

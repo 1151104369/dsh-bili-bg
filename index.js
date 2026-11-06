@@ -441,14 +441,24 @@ export function apply(ctx) {
                 .catch((error) => sendJson(res, 400, { ok: false, error: describe(error) }))
               return
             }
-            if (method !== 'GET') {
-              sendJson(res, 405, { ok: false, error: 'use GET/POST' })
+            if (method !== 'GET' && method !== 'DELETE') {
+              sendJson(res, 405, { ok: false, error: 'use GET/DELETE' })
               return
             }
             const url = parseUrl(req)
             const id = url.searchParams.get('id') || ''
             if (!id) {
               sendJson(res, 400, { ok: false, error: '需要 id 参数' })
+              return
+            }
+            // DELETE ?id= → 中途取消（下载中断开 HTTP，排队中直接出队），并清理 .part 半成品。
+            if (method === 'DELETE') {
+              const cancelled = downloader.cancelDownload(id)
+              if (!cancelled) {
+                sendJson(res, 404, { ok: false, error: '任务不存在或已结束' })
+                return
+              }
+              sendJson(res, 200, { ok: true, task: cancelled })
               return
             }
             const task = downloader.getDownload(id)
