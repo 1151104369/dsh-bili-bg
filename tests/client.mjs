@@ -234,6 +234,7 @@ function ok(name, cond) {
 }
 
 ok('panel built', !!panel)
+ok('panel header built (sticky bar with close)', !!findByClass(document.body, 'dsbili-head') && !!findByClass(document.body, 'dsbili-close'))
 ok('launch built', !!launch)
 ok('video created', !!video && video.src.includes('/dsh-bili/media'))
 
