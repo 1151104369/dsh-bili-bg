@@ -277,6 +277,9 @@ ok('layout: volume/opacity rows above source switcher', idxVolume >= 0 && idxOpa
 })
 ok('layout: source switcher right above list', idxSource >= 0 && idxList > idxSource, { idxSource, idxList })
 
+// 未登录：默认来源应为「热门」
+ok('default source popular when logged out', api.state.source === 'popular', api.state.source)
+
 // ── 账号区 / 首页推荐 ──
 const account = findById(document.body, 'dsbili-account')
 ok('account area built', !!account)
@@ -304,6 +307,7 @@ if (api.auth && api.auth.refresh) api.auth.refresh()
 await new Promise((r) => setTimeout(r, 40))
 const accName = findByClass(document.body, 'dsbili-account-name')
 ok('account shows nickname', !!accName && accName.textContent === '阿B测试')
+ok('default source switches to feed when logged in', api.state.source === 'feed', api.state.source)
 const accAvatar = findByClass(document.body, 'dsbili-account-avatar')
 ok('account shows avatar', !!accAvatar && accAvatar.src === 'http://x/face.png')
 ok('account hides login button when logged in', !findByClass(document.body, 'dsbili-account-login'))
@@ -313,5 +317,6 @@ ok('account shows logout button', !!findByClass(document.body, 'dsbili-account-l
 if (api.auth && api.auth.logout) api.auth.logout()
 await new Promise((r) => setTimeout(r, 40))
 ok('after logout shows login button again', !!findByClass(document.body, 'dsbili-account-login'))
+ok('source falls back to popular after logout', api.state.source === 'popular', api.state.source)
 
 console.log(`\n${pass} checks passed`)

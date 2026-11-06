@@ -120,12 +120,16 @@
     index: -1,
     current: null,
     busy: false,
+    queueBusy: false,
     error: '',
     failStreak: 0,
     loggedIn: false,
     account: null,
     authBusy: false,
+    authReady: false,
     qr: null,
+    // 用户是否手动点过来源按钮。未手动选过时：已登录默认「首页推荐」，未登录回落「热门」。
+    sourcePicked: false,
   }
 
   // DOM
@@ -655,23 +659,50 @@
   /** 拉一次登录态并重绘账号区。 */
   function refreshAuth() {
     var ar = authRoutes()
-    if (!ar || !ar.status) return
+    if (!ar || !ar.status) {
+      st.authReady = true
+      return
+    }
     st.authBusy = true
     renderAccount()
     fetchJson(ar.status, { cache: 'no-store' }).then(
       function (data) {
         st.authBusy = false
+        st.authReady = true
         if (data && data.ok === true) {
           st.loggedIn = data.loggedIn === true
           st.account = data.account && typeof data.account === 'object' ? data.account : null
         }
         renderAccount()
+        applyDefaultSource()
       },
       function () {
         st.authBusy = false
+        st.authReady = true
         renderAccount()
+        applyDefaultSource()
       },
     )
+  }
+
+  /**
+   * 默认来源策略：未手动选过来源时，已登录 → 首页推荐，未登录 → 热门。
+   * 手动选过（st.sourcePicked）就尊重用户选择；仅在「选的是首页推荐但已登出」时回落热门，
+   * 避免一直停在会提示需登录的来源上。
+   */
+  function applyDefaultSource() {
+    if (!st.authReady) return
+    var next = st.source
+    if (st.sourcePicked) {
+      if (!st.loggedIn && st.source === 'feed') next = 'popular'
+    } else {
+      next = st.loggedIn ? 'feed' : 'popular'
+    }
+    if (next === st.source) return
+    st.source = next
+    st.index = -1
+    syncButtons()
+    if (!st.busy) loadQueue()
   }
 
   /** 点“二维码登录”：向宿主申请新二维码，再开始 2s 轮询。 */
@@ -791,6 +822,7 @@
         st.loggedIn = false
         st.account = null
         renderAccount()
+        applyDefaultSource() // 退出后若来源是首页推荐，会自动回落热门
         setStatus(data && data.ok === true ? '已退出登录' : '退出登录完成', 'ok')
       },
       function () {
@@ -798,6 +830,7 @@
         st.loggedIn = false
         st.account = null
         renderAccount()
+        applyDefaultSource()
         setStatus('已退出登录', 'ok')
       },
     )
@@ -852,10 +885,13 @@
 
   function loadQueue() {
     if (!ROUTES.queue) return Promise.resolve()
+    if (st.queueBusy) return Promise.resolve()
+    st.queueBusy = true
     var label = st.source === 'ranking' ? '排行榜' : st.source === 'feed' ? '首页推荐' : '热门'
     setStatus('加载' + label + '…', '')
     return fetchJson(ROUTES.queue + '?source=' + st.source + '&count=' + st.count, { cache: 'no-store' }).then(
       function (data) {
+        st.queueBusy = false
         if (!data || data.ok !== true) {
           setStatus((data && data.error) || '队列加载失败', 'error')
           return
@@ -870,6 +906,7 @@
         setStatus('已加载 ' + st.queue.length + ' 支视频', 'ok')
       },
       function (error) {
+        st.queueBusy = false
         setStatus('队列请求失败：' + (error && error.message ? error.message : error), 'error')
       },
     )
@@ -918,6 +955,7 @@
     }
     return {
       source: st.source,
+      sourcePicked: st.sourcePicked === true,
       count: st.count,
       carousel: st.carousel,
       muted: st.muted,
@@ -987,6 +1025,7 @@
         var s = data && data.state
         if (!isObj(s)) return
         st.source = s.source === 'ranking' || s.source === 'feed' ? s.source : st.source
+        st.sourcePicked = s.sourcePicked === true
         st.count = num(s.count, st.count, 1, 30)
         st.carousel = s.carousel === true
         st.muted = s.muted === true
@@ -1002,6 +1041,8 @@
         if (s.bvid && inputEl) inputEl.value = s.bvid
         syncControls()
         applyVeil()
+        // 来源策略可能依赖登录态（已登录默认首页推荐），两者都就绪后再定一次。
+        applyDefaultSource()
         // 启动续播：上次正在播且记了进度 → 自动接着播（无手势时浏览器会退回静音）
         if (st.resume && s.bvid && s.playing === true) {
           st.pendingSeek = num(s.time, 0, 0, 1e9)
@@ -1472,6 +1513,7 @@
     srcPopular = el('button', 'dsbili-btn', '热门')
     srcPopular.addEventListener('click', function () {
       st.source = 'popular'
+      st.sourcePicked = true
       st.index = -1
       syncButtons()
       loadQueue()
@@ -1480,6 +1522,7 @@
     srcRanking = el('button', 'dsbili-btn', '排行榜')
     srcRanking.addEventListener('click', function () {
       st.source = 'ranking'
+      st.sourcePicked = true
       st.index = -1
       syncButtons()
       loadQueue()
@@ -1493,6 +1536,7 @@
         return
       }
       st.source = 'feed'
+      st.sourcePicked = true
       st.index = -1
       syncButtons()
       loadQueue()
