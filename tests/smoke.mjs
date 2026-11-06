@@ -72,10 +72,13 @@ assert.ok(
   rows[0].text.includes('#dsbili-panel > *') && rows[0].text.includes('flex: 0 0 auto'),
   '样式应禁止面板子项 flex 收缩（防止列表被压扁消失）',
 )
-// 回归：标题栏必须 sticky 在面板顶部，滚动时关闭按钮仍可点。
+// 回归：面板采用「固定标题栏 + 内部滚动 body」两段式（不是 sticky 悬浮）。
 assert.ok(
-  rows[0].text.includes('.dsbili-head') && rows[0].text.includes('position: sticky'),
-  '样式应将面板标题栏固定在顶部（position: sticky）',
+  rows[0].text.includes('.dsbili-body') &&
+    rows[0].text.includes('#dsbili-panel > .dsbili-body') &&
+    rows[0].text.includes('#dsbili-panel') &&
+    !rows[0].text.includes('position: sticky'),
+  '样式应为固定标题栏 + 内部滚动 body（标题栏不随内容滚动）',
 )
 assert.ok(rows[1].text.includes('dsbili-launch'), '脚本应创建入口胶囊')
 assert.ok(rows[1].text.includes('Ctrl+Shift+B'), '脚本应带键盘入口')

@@ -229,12 +229,13 @@ body:not([data-ds-dark-theme]) #dsbili-launch {
   z-index: 906;
   width: 300px;
   max-height: min(82vh, 700px);
-  overflow-y: auto;
+  /* 面板本体**不滚动**：标题栏是固定的一段，滚动发生在 .dsbili-body 内部。 */
+  overflow: hidden;
   display: none;
   flex-direction: column;
-  gap: 11px;
+  gap: 0;
   box-sizing: border-box;
-  padding: 14px 16px 12px;
+  padding: 0;
   border-radius: 14px;
   font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
   font-size: 12.5px;
@@ -252,11 +253,25 @@ body:not([data-ds-dark-theme]) #dsbili-launch {
   display: flex;
 }
 
-/* 面板是 flex column 且有 max-height：内容（账号区二维码 148px + 各控件）一旦超过上限，
-   浏览器默认 flex-shrink:1 会把子项**一起压扁**，列表/状态行首当其冲 —— 表现为
-   「队列加载了但列表不见了」。这里统一禁止子项收缩，由面板自身 overflow-y:auto 滚动。
-   这是加账号区后列表消失的直接原因，勿删。 */
+/* 面板布局：固定标题栏 + 可滚动内容区（真正的 header，不是 sticky 悬浮）。
+   - 面板本体 overflow:hidden，不滚动；
+   - .dsbili-head 是普通文档流里的第一段，永远固定；
+   - .dsbili-body 吃掉剩余高度并滚动，其子项禁止 flex 收缩（否则列表会被压扁"消失"）。 */
 #dsbili-panel > * {
+  flex: 0 0 auto;
+}
+
+#dsbili-panel > .dsbili-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  overflow-y: auto;
+  padding: 11px 16px 12px;
+}
+
+.dsbili-body > * {
   flex: 0 0 auto;
 }
 
@@ -267,23 +282,18 @@ body:not([data-ds-dark-theme]) #dsbili-panel {
   box-shadow: 0 18px 48px rgba(20, 32, 48, 0.22);
 }
 
-/* 标题栏固定在面板顶部：面板整体是滚动容器（overflow-y:auto），sticky 让「B 站背景 / ✕」
-   在滚动时始终可见、随时能点关闭，不必滚回顶部。
-   负 margin 抵消 #dsbili-panel 的 padding，保证滚动时下方内容不会从标题栏缝隙露出。 */
+/* 标题栏：普通文档流里的固定一条（不是 sticky）。它本身不滚动，
+   滚动只发生在下面的 .dsbili-body 里，所以滚动时关闭按钮始终可点。 */
 .dsbili-head {
-  position: sticky;
-  top: 0;
-  z-index: 3;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin: -14px -16px 0;
-  padding: 14px 16px 10px;
+  box-sizing: border-box;
+  padding: 13px 16px 10px;
   border-radius: 14px 14px 0 0;
   border-bottom: 1px solid rgba(198, 220, 246, 0.14);
   background: rgba(14, 20, 30, 0.98);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
 }
 
 body:not([data-ds-dark-theme]) .dsbili-head {

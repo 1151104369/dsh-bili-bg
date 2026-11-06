@@ -1327,6 +1327,11 @@
     head.appendChild(close)
     panel.appendChild(head)
 
+    // 标题栏是**独立固定**的一段，下面这块 body 才是滚动区：
+    // 面板本体不滚动（overflow:hidden），滚动发生在这里 => 标题栏是真的"标题栏"，不是浮在内容上。
+    var bodyEl = el('div', 'dsbili-body')
+    panel.appendChild(bodyEl)
+
     // 输入行
     var inputRow = el('div', 'dsbili-inputrow')
     inputEl = el('input', 'dsbili-input')
@@ -1341,7 +1346,7 @@
     })
     inputRow.appendChild(inputEl)
     inputRow.appendChild(goBtn)
-    panel.appendChild(inputRow)
+    bodyEl.appendChild(inputRow)
 
     // 当前
     var now = el('div', 'dsbili-now')
@@ -1349,12 +1354,12 @@
     metaEl = el('div', 'dsbili-now-meta', '输入 BV 号开始')
     now.appendChild(titleEl)
     now.appendChild(metaEl)
-    panel.appendChild(now)
+    bodyEl.appendChild(now)
 
     // 账号区：二维码登录 / 账号信息 / 退出（内容由 renderAccount 动态重绘）。
     accountEl = el('div', 'dsbili-account')
     accountEl.id = 'dsbili-account'
-    panel.appendChild(accountEl)
+    bodyEl.appendChild(accountEl)
     renderAccount()
 
     // 进度条（可拖动）
@@ -1405,7 +1410,7 @@
     progressRange.addEventListener('change', endSeek)
     progRow.appendChild(progHead)
     progRow.appendChild(progressRange)
-    panel.appendChild(progRow)
+    bodyEl.appendChild(progRow)
 
     // 播放控制
     var row1 = el('div', 'dsbili-btnrow')
@@ -1418,7 +1423,7 @@
     row1.appendChild(playBtn)
     row1.appendChild(prevBtn)
     row1.appendChild(nextBtn)
-    panel.appendChild(row1)
+    bodyEl.appendChild(row1)
 
     // 声音/专注
     var row2 = el('div', 'dsbili-btnrow')
@@ -1440,7 +1445,7 @@
     })
     row2.appendChild(muteBtn)
     row2.appendChild(focusBtn)
-    panel.appendChild(row2)
+    bodyEl.appendChild(row2)
 
     // 显示方式：完整（按宽度靠顶、不裁切）/ 铺满（填满、可裁切）
     var rowFit = el('div', 'dsbili-btnrow')
@@ -1460,7 +1465,7 @@
       persist()
     })
     rowFit.appendChild(bgBtn)
-    panel.appendChild(rowFit)
+    bodyEl.appendChild(rowFit)
 
     // 倍速
     var rateRow = el('div', 'dsbili-row')
@@ -1484,7 +1489,7 @@
     }
     rateRow.appendChild(rateHead)
     rateRow.appendChild(rateBtns)
-    panel.appendChild(rateRow)
+    bodyEl.appendChild(rateRow)
 
     // 轮播/来源
     var row3 = el('div', 'dsbili-btnrow')
@@ -1567,7 +1572,7 @@
     })
     volRow.appendChild(volHead)
     volRow.appendChild(volRange)
-    panel.appendChild(volRow)
+    bodyEl.appendChild(volRow)
 
     // 界面不透明度
     var surfRow = el('div', 'dsbili-row')
@@ -1587,7 +1592,7 @@
     })
     surfRow.appendChild(surfHead)
     surfRow.appendChild(surfaceRange)
-    panel.appendChild(surfRow)
+    bodyEl.appendChild(surfRow)
 
     // 蒙版
     var veilRow = el('div', 'dsbili-row')
@@ -1608,22 +1613,22 @@
     })
     veilRow.appendChild(veilHead)
     veilRow.appendChild(veilRange)
-    panel.appendChild(veilRow)
+    bodyEl.appendChild(veilRow)
 
     // 轮播 / 来源切换：放在音量·界面不透明度·蒙版之后、列表之前 ——
     // 选完来源立刻在下方看到对应列表（用户反馈的布局顺序）。
-    panel.appendChild(row3)
-    panel.appendChild(row4)
+    bodyEl.appendChild(row3)
+    bodyEl.appendChild(row4)
 
     // 列表
     listEl = el('div', 'dsbili-list')
     renderList()
-    panel.appendChild(listEl)
+    bodyEl.appendChild(listEl)
 
     // 状态
     statusEl = el('div', 'dsbili-status')
     statusEl.setAttribute('data-level', '')
-    panel.appendChild(statusEl)
+    bodyEl.appendChild(statusEl)
 
     var foot = el('div', 'dsbili-foot')
     foot.appendChild(el('span', null, '无登录画质 360p~720p'))
@@ -1638,7 +1643,7 @@
       }
     })
     foot.appendChild(reset)
-    panel.appendChild(foot)
+    bodyEl.appendChild(foot)
 
     doc.body.appendChild(panel)
 

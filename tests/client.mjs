@@ -234,7 +234,7 @@ function ok(name, cond) {
 }
 
 ok('panel built', !!panel)
-ok('panel header built (sticky bar with close)', !!findByClass(document.body, 'dsbili-head') && !!findByClass(document.body, 'dsbili-close'))
+ok('panel header built (fixed bar with close)', !!findByClass(document.body, 'dsbili-head') && !!findByClass(document.body, 'dsbili-close'))
 ok('launch built', !!launch)
 ok('video created', !!video && video.src.includes('/dsh-bili/media'))
 
@@ -265,8 +265,11 @@ ok('queue list rendered', !!listEl && (listEl.children || []).length === 2)
 ok('queue list rows have index+title', !!listEl && (listEl.children[0].children || []).length === 2)
 
 // 布局顺序回归：音量/界面不透明度/蒙版 在 轮播·来源 之上，来源切换紧邻列表（用户要求的顺序）。
-const panelKids = panel.children || []
-const idxOf = (pred) => panelKids.findIndex(pred)
+// 面板是「固定标题栏 + 内部滚动 body」两段式，顺序类断言要看 body 的子项。
+const scrollBody = findByClass(document.body, 'dsbili-body')
+ok('panel has fixed header outside scroll body', !!scrollBody && !scrollBody.children.some((c) => c.className === 'dsbili-head'))
+const bodyKids = scrollBody ? scrollBody.children : []
+const idxOf = (pred) => bodyKids.findIndex(pred)
 const idxVolume = idxOf((c) => hasText(c, '音量'))
 const idxOpacity = idxOf((c) => hasText(c, '界面不透明度'))
 const idxSource = idxOf((c) => (c.children || []).some((x) => hasText(x, '首页推荐')))
@@ -288,7 +291,7 @@ ok('account shows QR login when logged out', !!findByClass(document.body, 'dsbil
 ok('feed source button present', !!findByText(document.body, '首页推荐'))
 
 // 来源按钮顺序：首页推荐 → 热门 → 排行榜
-const sourceRow = panelKids.find((c) => (c.children || []).some((x) => x.textContent === '首页推荐'))
+const sourceRow = bodyKids.find((c) => (c.children || []).some((x) => x.textContent === '首页推荐'))
 if (sourceRow) {
   const order = sourceRow.children.map((b) => b.textContent)
   ok('source order: feed before popular', order.indexOf('首页推荐') < order.indexOf('热门'), order)
