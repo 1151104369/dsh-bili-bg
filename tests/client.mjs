@@ -248,6 +248,14 @@ ok('clear mode sets html attr', document.documentElement.getAttribute('data-dsbi
 api.clear()
 ok('clear mode off again', document.documentElement.getAttribute('data-dsbili-clear') === null)
 
+// ── 队列列表渲染回归 ──
+// 曾因面板 flex-shrink 把列表压扁导致"列表消失"；这里断言加载队列后列表条目确实渲染出来。
+api.loadQueue()
+await new Promise((r) => setTimeout(r, 60))
+const listEl = findByClass(document.body, 'dsbili-list')
+ok('queue list rendered', !!listEl && (listEl.children || []).length === 2)
+ok('queue list rows have index+title', !!listEl && (listEl.children[0].children || []).length === 2)
+
 // ── 账号区 / 首页推荐 ──
 const account = findById(document.body, 'dsbili-account')
 ok('account area built', !!account)

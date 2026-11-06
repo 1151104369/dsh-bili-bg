@@ -67,6 +67,11 @@ assert.equal(rows[1].kind, 'script')
 assert.equal(rows[1].placement, 'body')
 assert.ok(rows[1].text.includes('__DSH_BILI_BG__'), '脚本应包含 bootstrap 全局')
 assert.ok(rows[0].text.includes('#dsbili-launch'), '样式应包含入口胶囊选择器')
+// 回归：面板是 flex column + max-height，必须禁止子项收缩，否则内容超长时队列列表被压扁"消失"。
+assert.ok(
+  rows[0].text.includes('#dsbili-panel > *') && rows[0].text.includes('flex: 0 0 auto'),
+  '样式应禁止面板子项 flex 收缩（防止列表被压扁消失）',
+)
 assert.ok(rows[1].text.includes('dsbili-launch'), '脚本应创建入口胶囊')
 assert.ok(rows[1].text.includes('Ctrl+Shift+B'), '脚本应带键盘入口')
 

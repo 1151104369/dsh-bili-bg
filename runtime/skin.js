@@ -1124,6 +1124,8 @@
     if (panel === null) return
     panel.setAttribute('data-open', '1')
     launch.setAttribute('data-active', '1')
+    // 首次打开面板时队列还是空的（例如刚重启），自动拉一次，免得用户看到空列表。
+    if (!st.queue.length && !st.busy) loadQueue()
   }
   function closePanel() {
     if (panel === null) return

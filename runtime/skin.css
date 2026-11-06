@@ -252,6 +252,14 @@ body:not([data-ds-dark-theme]) #dsbili-launch {
   display: flex;
 }
 
+/* 面板是 flex column 且有 max-height：内容（账号区二维码 148px + 各控件）一旦超过上限，
+   浏览器默认 flex-shrink:1 会把子项**一起压扁**，列表/状态行首当其冲 —— 表现为
+   「队列加载了但列表不见了」。这里统一禁止子项收缩，由面板自身 overflow-y:auto 滚动。
+   这是加账号区后列表消失的直接原因，勿删。 */
+#dsbili-panel > * {
+  flex: 0 0 auto;
+}
+
 body:not([data-ds-dark-theme]) #dsbili-panel {
   color: #1e2734;
   background: rgba(252, 253, 255, 0.97);
