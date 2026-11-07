@@ -132,6 +132,9 @@
     srcAbs: '',
     srcFallback: false,
     launcher: null,
+    panelPos: null,
+    // 面板标签页：play | queue | account | download | settings
+    tab: 'play',
     queue: [],
     index: -1,
     current: null,
@@ -197,6 +200,7 @@
   var progressTime = null
   var lastPlaybackPersist = 0
   var accountEl = null
+  var panelSetTab = null
   var srcFeed = null
   var qrPollTimer = null
   var qrPollTries = 0
@@ -1777,6 +1781,33 @@
     persist()
   }
 
+  /** 应用面板位置（标题栏拖动后会记住，重启恢复）。 */
+  function applyPanelPos(pos) {
+    if (panel === null || !isObj(pos)) return
+    var left = num(pos.left, NaN, -100000, 100000)
+    var top = num(pos.top, NaN, -100000, 100000)
+    if (left !== left || top !== top) return
+    st.panelPos = { left: Math.round(left), top: Math.round(top) }
+    try {
+      panel.style.left = Math.round(left) + 'px'
+      panel.style.top = Math.round(top) + 'px'
+      panel.style.right = 'auto'
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  /** 记录面板当前位置（拖动结束）。 */
+  function rememberPanelPos() {
+    if (panel === null) return
+    var rect = typeof panel.getBoundingClientRect === 'function' ? panel.getBoundingClientRect() : null
+    var left = rect ? rect.left : parseFloat(panel.style.left)
+    var top = rect ? rect.top : parseFloat(panel.style.top)
+    if (left !== left || top !== top) return
+    st.panelPos = { left: Math.round(left), top: Math.round(top) }
+    persist()
+  }
+
   // ────────────────────────────── 状态持久化 ──────────────────────────────
 
   /** 组装要落盘的状态（含播放进度/是否在播，用于重启续播）。 */
@@ -1805,6 +1836,8 @@
       preserveBg: st.preserveBg,
       rate: st.rate,
       launcher: st.launcher || null,
+      panelPos: st.panelPos || null,
+      tab: st.tab,
       resume: st.resume,
       // 高清开关与清晰度选择要跨重启记住（登录态下才生效）。
       hd: st.hd === true,
@@ -1887,6 +1920,8 @@
         // 而不是把画面直接亮出来。必须在 syncControls / 续播之前恢复。
         st.focusOff = s.focusOff === true
         if (s.launcher) applyLauncherPos(s.launcher)
+        if (s.panelPos) applyPanelPos(s.panelPos)
+        if (typeof s.tab === 'string' && panelSetTab) panelSetTab(s.tab)
         if (s.bvid && inputEl) inputEl.value = s.bvid
         syncControls()
         applyVeil()
@@ -2417,6 +2452,8 @@
     if (panel === null) return
     panel.setAttribute('data-open', '1')
     launch.setAttribute('data-active', '1')
+    // 恢复上次拖到的位置（窗口尺寸可能变了，这里再夹一次）。
+    if (st.panelPos) applyPanelPos(st.panelPos)
     // 首次打开面板时队列还是空的（例如刚重启），自动拉一次，免得用户看到空列表。
     if (!st.queue.length && !st.busy) loadQueue()
   }
@@ -2611,10 +2648,108 @@
     head.appendChild(close)
     panel.appendChild(head)
 
-    // 标题栏是**独立固定**的一段，下面这块 body 才是滚动区：
-    // 面板本体不滚动（overflow:hidden），滚动发生在这里 => 标题栏是真的"标题栏"，不是浮在内容上。
+    // ── 标题栏拖动：把设置面板拖到任意位置（关闭按钮除外），位置会记住 ──
+    var panelDrag = null
+    head.addEventListener('pointerdown', function (ev) {
+      if (ev && typeof ev.button === 'number' && ev.button !== 0) return
+      var target = ev && ev.target
+      if (target && typeof target.closest === 'function' && target.closest('.dsbili-close')) return
+      var rect = typeof panel.getBoundingClientRect === 'function' ? panel.getBoundingClientRect() : { left: 0, top: 0 }
+      panelDrag = { sx: ev ? ev.clientX : 0, sy: ev ? ev.clientY : 0, ox: rect.left, oy: rect.top, moved: false }
+      try {
+        if (head.setPointerCapture) head.setPointerCapture(ev.pointerId)
+      } catch (e) {
+        /* ignore */
+      }
+      if (panel) panel.setAttribute('data-dragging', '1')
+    })
+    head.addEventListener('pointermove', function (ev) {
+      if (panelDrag === null || !ev) return
+      var dx = ev.clientX - panelDrag.sx
+      var dy = ev.clientY - panelDrag.sy
+      if (!panelDrag.moved && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) panelDrag.moved = true
+      if (!panelDrag.moved) return
+      var w = panel.offsetWidth || 300
+      var h = panel.offsetHeight || 320
+      var maxLeft = Math.max(0, (global.innerWidth || 0) - w)
+      var maxTop = Math.max(0, (global.innerHeight || 0) - Math.min(h, 120))
+      var left = Math.max(0, Math.min(maxLeft, panelDrag.ox + dx))
+      var top = Math.max(0, Math.min(maxTop, panelDrag.oy + dy))
+      panel.style.left = Math.round(left) + 'px'
+      panel.style.top = Math.round(top) + 'px'
+      panel.style.right = 'auto'
+    })
+    function endPanelDrag(ev) {
+      if (panelDrag === null) return
+      var moved = panelDrag.moved
+      panelDrag = null
+      try {
+        if (head.releasePointerCapture && ev) head.releasePointerCapture(ev.pointerId)
+      } catch (e) {
+        /* ignore */
+      }
+      if (panel) panel.removeAttribute('data-dragging')
+      if (moved) rememberPanelPos()
+    }
+    head.addEventListener('pointerup', endPanelDrag)
+    head.addEventListener('pointercancel', endPanelDrag)
+
+    // ── 标签页：把「播放 / 列表 / 账号 / 下载 / 设置」分门别类，避免一屏太乱 ──
+    var TAB_DEFS = [
+      { id: 'play', label: '播放' },
+      { id: 'queue', label: '列表' },
+      { id: 'account', label: '账号' },
+      { id: 'download', label: '下载' },
+      { id: 'settings', label: '设置' },
+    ]
+    var tabsBar = el('div', 'dsbili-tabs')
+    tabsBar.setAttribute('role', 'tablist')
+    var tabButtons = {}
+    var panes = {}
+    for (var ti = 0; ti < TAB_DEFS.length; ti += 1) {
+      ;(function (def) {
+        var btn = el('button', 'dsbili-tab', def.label)
+        btn.setAttribute('data-tab', def.id)
+        btn.setAttribute('role', 'tab')
+        btn.addEventListener('click', function () {
+          setTab(def.id)
+        })
+        tabsBar.appendChild(btn)
+        tabButtons[def.id] = btn
+      })(TAB_DEFS[ti])
+    }
+    panel.appendChild(tabsBar)
+
     var bodyEl = el('div', 'dsbili-body')
     panel.appendChild(bodyEl)
+    for (var pi = 0; pi < TAB_DEFS.length; pi += 1) {
+      var paneEl = el('div', 'dsbili-pane')
+      paneEl.setAttribute('data-tab', TAB_DEFS[pi].id)
+      bodyEl.appendChild(paneEl)
+      panes[TAB_DEFS[pi].id] = paneEl
+    }
+    function pane(id) {
+      return panes[id] || panes.play
+    }
+
+    // 底部固定区（状态 + 设置/说明）：不随标签页滚动，随时可见。
+    var footWrap = el('div', 'dsbili-footer')
+    panel.appendChild(footWrap)
+
+    /** 切换标签页。 */
+    function setTab(id) {
+      var target = panes[id] ? id : 'play'
+      st.tab = target
+      for (var k in panes) {
+        if (!Object.prototype.hasOwnProperty.call(panes, k)) continue
+        var active = k === target ? '1' : '0'
+        panes[k].setAttribute('data-active', active)
+        if (tabButtons[k]) tabButtons[k].setAttribute('data-active', active)
+      }
+      syncButtons()
+    }
+    setTab(st.tab)
+    panelSetTab = setTab
 
     // 输入行
     var inputRow = el('div', 'dsbili-inputrow')
@@ -2630,7 +2765,7 @@
     })
     inputRow.appendChild(inputEl)
     inputRow.appendChild(goBtn)
-    bodyEl.appendChild(inputRow)
+    pane('play').appendChild(inputRow)
 
     // 当前
     var now = el('div', 'dsbili-now')
@@ -2638,12 +2773,12 @@
     metaEl = el('div', 'dsbili-now-meta', '输入 BV 号开始')
     now.appendChild(titleEl)
     now.appendChild(metaEl)
-    bodyEl.appendChild(now)
+    pane('play').appendChild(now)
 
     // 账号区：二维码登录 / 账号信息 / 退出（内容由 renderAccount 动态重绘）。
     accountEl = el('div', 'dsbili-account')
     accountEl.id = 'dsbili-account'
-    bodyEl.appendChild(accountEl)
+    pane('account').appendChild(accountEl)
     renderAccount()
 
     // 进度条（可拖动）
@@ -2721,7 +2856,7 @@
     })
     progRow.appendChild(progHead)
     progRow.appendChild(progressRange)
-    bodyEl.appendChild(progRow)
+    pane('play').appendChild(progRow)
 
     // 登录后高清：开关 + 分轨清晰度（未登录/无分轨时降级展示，但开关仍在）。
     var hdRow = el('div', 'dsbili-row dsbili-hdrow')
@@ -2736,8 +2871,8 @@
     hdRow.appendChild(hdHead)
     hdRow.appendChild(hdBtn)
     qualityWrap = el('div', 'dsbili-hd-quality')
-    bodyEl.appendChild(hdRow)
-    bodyEl.appendChild(qualityWrap)
+    pane('play').appendChild(hdRow)
+    pane('play').appendChild(qualityWrap)
     syncQuality()
 
     // 下载当前视频：宿主有 download 路由才可用，否则按钮禁用（清晰回退）。
@@ -2754,7 +2889,7 @@
     dlRow.appendChild(dlHead)
     dlRow.appendChild(dlBtn)
     dlRow.appendChild(dlStatusEl)
-    bodyEl.appendChild(dlRow)
+    pane('download').appendChild(dlRow)
     loadDownloadDir()
 
     // ffmpeg 状态 / 一键下载（只有宿主提供 ffmpeg 路由时才显示）
@@ -2770,7 +2905,7 @@
       ffmpegStatusEl.setAttribute('data-level', '')
       ffRow.appendChild(ffmpegBtn)
       ffRow.appendChild(ffmpegStatusEl)
-      bodyEl.appendChild(ffRow)
+      pane('download').appendChild(ffRow)
       loadFfmpegStatus()
     }
 
@@ -2785,7 +2920,7 @@
     row1.appendChild(playBtn)
     row1.appendChild(prevBtn)
     row1.appendChild(nextBtn)
-    bodyEl.appendChild(row1)
+    pane('play').appendChild(row1)
 
     // 声音/专注
     var row2 = el('div', 'dsbili-btnrow')
@@ -2795,7 +2930,7 @@
     focusBtn.addEventListener('click', toggleFocus)
     row2.appendChild(muteBtn)
     row2.appendChild(focusBtn)
-    bodyEl.appendChild(row2)
+    pane('play').appendChild(row2)
 
     // 显示方式：完整（按宽度靠顶、不裁切）/ 铺满（填满、可裁切）
     var rowFit = el('div', 'dsbili-btnrow')
@@ -2815,7 +2950,7 @@
       persist()
     })
     rowFit.appendChild(bgBtn)
-    bodyEl.appendChild(rowFit)
+    pane('settings').appendChild(rowFit)
 
     // 倍速
     var rateRow = el('div', 'dsbili-row')
@@ -2839,7 +2974,7 @@
     }
     rateRow.appendChild(rateHead)
     rateRow.appendChild(rateBtns)
-    bodyEl.appendChild(rateRow)
+    pane('play').appendChild(rateRow)
 
     // 轮播/来源
     var row3 = el('div', 'dsbili-btnrow')
@@ -2928,7 +3063,7 @@
     })
     volRow.appendChild(volHead)
     volRow.appendChild(volRange)
-    bodyEl.appendChild(volRow)
+    pane('play').appendChild(volRow)
 
     // 界面不透明度
     var surfRow = el('div', 'dsbili-row')
@@ -2948,7 +3083,7 @@
     })
     surfRow.appendChild(surfHead)
     surfRow.appendChild(surfaceRange)
-    bodyEl.appendChild(surfRow)
+    pane('settings').appendChild(surfRow)
 
     // 蒙版
     var veilRow = el('div', 'dsbili-row')
@@ -2969,22 +3104,22 @@
     })
     veilRow.appendChild(veilHead)
     veilRow.appendChild(veilRange)
-    bodyEl.appendChild(veilRow)
+    pane('settings').appendChild(veilRow)
 
     // 轮播 / 来源切换：放在音量·界面不透明度·蒙版之后、列表之前 ——
     // 选完来源立刻在下方看到对应列表（用户反馈的布局顺序）。
-    bodyEl.appendChild(row3)
-    bodyEl.appendChild(row4)
+    pane('queue').appendChild(row3)
+    pane('queue').appendChild(row4)
 
     // 列表
     listEl = el('div', 'dsbili-list')
     renderList()
-    bodyEl.appendChild(listEl)
+    pane('queue').appendChild(listEl)
 
     // 状态
     statusEl = el('div', 'dsbili-status')
     statusEl.setAttribute('data-level', '')
-    bodyEl.appendChild(statusEl)
+    footWrap.appendChild(statusEl)
 
     var foot = el('div', 'dsbili-foot')
     foot.appendChild(el('span', null, '登录 + 开高清 = 1080p+（DASH/MSE）；关闭即 720p'))
@@ -2999,7 +3134,7 @@
       }
     })
     foot.appendChild(reset)
-    bodyEl.appendChild(foot)
+    footWrap.appendChild(foot)
 
     doc.body.appendChild(panel)
 
@@ -3107,6 +3242,9 @@
       },
       open: openPanel,
       close: closePanel,
+      tab: function (id) {
+        if (panelSetTab) panelSetTab(id)
+      },
       download: startDownloadCurrent,
       auth: {
         refresh: refreshAuth,

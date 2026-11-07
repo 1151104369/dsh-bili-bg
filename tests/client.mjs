@@ -328,22 +328,34 @@ const listEl = findByClass(document.body, 'dsbili-list')
 ok('queue list rendered', !!listEl && (listEl.children || []).length === 2)
 ok('queue list rows have index+title', !!listEl && (listEl.children[0].children || []).length === 2)
 
-// 布局顺序回归：音量/界面不透明度/蒙版 在 轮播·来源 之上，来源切换紧邻列表（用户要求的顺序）。
-// 面板是「固定标题栏 + 内部滚动 body」两段式，顺序类断言要看 body 的子项。
+// 面板结构回归：固定标题栏 + 标签页 + 可滚动内容区 + 固定底部。
 const scrollBody = findByClass(document.body, 'dsbili-body')
 ok('panel has fixed header outside scroll body', !!scrollBody && !scrollBody.children.some((c) => c.className === 'dsbili-head'))
-const bodyKids = scrollBody ? scrollBody.children : []
-const idxOf = (pred) => bodyKids.findIndex(pred)
-const idxVolume = idxOf((c) => hasText(c, '音量'))
-const idxOpacity = idxOf((c) => hasText(c, '界面不透明度'))
-const idxSource = idxOf((c) => (c.children || []).some((x) => hasText(x, '首页推荐')))
-const idxList = idxOf((c) => String(c.className || '').split(/\s+/).indexOf('dsbili-list') !== -1)
-ok('layout: volume/opacity rows above source switcher', idxVolume >= 0 && idxOpacity > idxVolume && idxSource > idxOpacity, {
-  idxVolume,
-  idxOpacity,
-  idxSource,
-})
-ok('layout: source switcher right above list', idxSource >= 0 && idxList > idxSource, { idxSource, idxList })
+ok('panel has fixed tabs outside scroll body', !!findByClass(document.body, 'dsbili-tabs'))
+const tabDefs = ['play', 'queue', 'account', 'download', 'settings']
+const paneOf = (id) => (scrollBody ? scrollBody.children.find((c) => c.getAttribute && c.getAttribute('data-tab') === id) : null)
+const tabCount = (scrollBody ? scrollBody.children.filter((c) => String(c.className || '').indexOf('dsbili-pane') !== -1) : []).length
+ok('five tab panes built', tabCount === 5, tabCount)
+ok('default tab is play', api.state.tab === 'play' && paneOf('play').getAttribute('data-active') === '1', api.state.tab)
+// 分类正确：音量在「播放」；界面不透明度/蒙版在「设置」；来源切换与列表在「列表」
+const playPane = paneOf('play')
+const settingsPane = paneOf('settings')
+const queuePane = paneOf('queue')
+ok('play pane has volume', !!playPane && hasText(playPane, '音量'))
+ok('settings pane has opacity/veil', !!settingsPane && hasText(settingsPane, '界面不透明度') && hasText(settingsPane, '蒙版浓度'))
+ok('queue pane has source switcher + list', !!queuePane && hasText(queuePane, '首页推荐'))
+// 来源切换紧邻列表（同一标签页内，来源在上、列表在下）
+const queueKids = queuePane ? queuePane.children : []
+const qIdxSource = queueKids.findIndex((c) => (c.children || []).some((x) => hasText(x, '首页推荐')))
+const qIdxList = queueKids.findIndex((c) => String(c.className || '').split(/\s+/).indexOf('dsbili-list') !== -1)
+ok('layout: source switcher right above list', qIdxSource >= 0 && qIdxList > qIdxSource, { qIdxSource, qIdxList })
+// 切标签：只有目标页 active
+api.tab('queue')
+ok('tab switch marks only queue active', paneOf('queue').getAttribute('data-active') === '1' && paneOf('play').getAttribute('data-active') === '0')
+ok('tab state remembered', api.state.tab === 'queue', api.state.tab)
+api.tab('play')
+ok('status lives in fixed footer', !!findByClass(document.body, 'dsbili-footer') && !!findByClass(document.body, 'dsbili-status'))
+ok('panel draggable title (cursor move class present)', !!findByClass(document.body, 'dsbili-head'))
 
 // ── 下载当前视频 ──
 // 面板 body 里渲染了下载区块与按钮；当前已加载视频（api.play 已设置 st.current）时按钮可用。
@@ -404,7 +416,7 @@ ok('account shows QR login when logged out', !!findByClass(document.body, 'dsbil
 ok('feed source button present', !!findByText(document.body, '首页推荐'))
 
 // 来源按钮顺序：首页推荐 → 热门 → 排行榜
-const sourceRow = bodyKids.find((c) => (c.children || []).some((x) => x.textContent === '首页推荐'))
+const sourceRow = (queuePane ? queuePane.children : []).find((c) => (c.children || []).some((x) => x.textContent === '首页推荐'))
 if (sourceRow) {
   const order = sourceRow.children.map((b) => b.textContent)
   ok('source order: feed before popular', order.indexOf('首页推荐') < order.indexOf('热门'), order)

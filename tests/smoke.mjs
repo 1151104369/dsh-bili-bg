@@ -91,6 +91,11 @@ assert.ok(
 )
 assert.ok(rows[2].text.includes('dsbili-launch'), '皮肤脚本应创建入口胶囊')
 assert.ok(rows[2].text.includes('Ctrl+Shift+B'), '皮肤脚本应带键盘入口')
+// 面板标签页 + 标题栏拖动：脚本/CSS 都要有对应实现
+assert.ok(rows[2].text.includes('dsbili-tab') && rows[2].text.includes('setTab'), '皮肤脚本应实现标签页切换')
+assert.ok(rows[2].text.includes('pointermove') && rows[2].text.includes('rememberPanelPos'), '皮肤脚本应实现面板标题栏拖动')
+assert.ok(rows[0].text.includes('.dsbili-tabs') && rows[0].text.includes('.dsbili-pane'), '样式应包含标签栏/面板样式')
+assert.ok(rows[0].text.includes('cursor: move'), '标题栏应显示可拖动光标')
 
 // ② 起真服务器
 const server = http.createServer((req, res) => {

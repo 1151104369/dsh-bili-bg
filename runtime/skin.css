@@ -266,9 +266,80 @@ body:not([data-ds-dark-theme]) #dsbili-launch {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 11px;
+  gap: 0;
   overflow-y: auto;
-  padding: 11px 16px 12px;
+  padding: 10px 16px 6px;
+}
+
+/* 标签页内容：一次只显示一个 */
+.dsbili-body > .dsbili-pane {
+  display: none;
+  flex-direction: column;
+  gap: 11px;
+  flex: 0 0 auto;
+}
+
+.dsbili-body > .dsbili-pane[data-active="1"] {
+  display: flex;
+}
+
+/* 标签栏：固定标题栏下方的一条，不随内容滚动 */
+.dsbili-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid rgba(198, 220, 246, 0.14);
+}
+
+.dsbili-tab {
+  flex: 1 1 0;
+  box-sizing: border-box;
+  padding: 7px 4px 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: inherit;
+  opacity: 0.62;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  transition: opacity 160ms ease, border-color 160ms ease;
+}
+
+.dsbili-tab:hover {
+  opacity: 0.9;
+}
+
+.dsbili-tab[data-active="1"] {
+  opacity: 1;
+  border-bottom-color: rgba(126, 183, 255, 0.9);
+}
+
+/* 底部固定区（状态 + 说明），不随标签页内容滚动 */
+.dsbili-footer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 16px 10px;
+  border-top: 1px solid rgba(198, 220, 246, 0.14);
+  background: rgba(14, 20, 30, 0.5);
+}
+
+.dsbili-footer .dsbili-status {
+  margin: 0;
+}
+
+.dsbili-footer .dsbili-foot {
+  margin: 0;
+}
+
+body:not([data-ds-dark-theme]) .dsbili-footer {
+  background: rgba(240, 245, 252, 0.6);
+  border-top-color: rgba(20, 30, 45, 0.12);
 }
 
 .dsbili-body > * {
@@ -294,6 +365,17 @@ body:not([data-ds-dark-theme]) #dsbili-panel {
   border-radius: 14px 14px 0 0;
   border-bottom: 1px solid rgba(198, 220, 246, 0.14);
   background: rgba(14, 20, 30, 0.98);
+  /* 标题栏可拖动整个面板 */
+  cursor: move;
+}
+
+.dsbili-head:active,
+#dsbili-panel[data-dragging="1"] .dsbili-head {
+  cursor: grabbing;
+}
+
+.dsbili-head .dsbili-close {
+  cursor: pointer;
 }
 
 body:not([data-ds-dark-theme]) .dsbili-head {
