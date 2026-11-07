@@ -530,6 +530,54 @@
     }
   }
 
+  /**
+   * 最多读取 limit 字节就停（并 cancel 剩余流）。
+   *
+   * 关键：有些 CDN 会忽略 Range、直接 200 返回整条 m4s（可达数 GB）。若 init 探针用
+   * `arrayBuffer()` 就会一直等到整个响应结束 → 20s 看门狗触发「高清初始化超时」。
+   * 这里改成流式读、够数就 cancel，保证探针一定能在有限字节内结束。
+   */
+  function readAtMost(res, limit) {
+    var cap = Number(limit) > 0 ? Number(limit) : 0
+    if (res && res.body && typeof res.body.getReader === 'function') {
+      var reader = res.body.getReader()
+      var chunks = []
+      var total = 0
+      function finish() {
+        var out = new Uint8Array(total)
+        var off = 0
+        for (var i = 0; i < chunks.length; i += 1) {
+          out.set(chunks[i], off)
+          off += chunks[i].length
+        }
+        return out
+      }
+      function step() {
+        return reader.read().then(function (r) {
+          if (r.done) return finish()
+          var c = u8(r.value)
+          chunks.push(c)
+          total += c.length
+          if (cap > 0 && total >= cap) {
+            try {
+              reader.cancel()
+            } catch (e) {
+              /* ignore */
+            }
+            return finish()
+          }
+          return step()
+        })
+      }
+      return step()
+    }
+    return (res && res.arrayBuffer ? res.arrayBuffer() : Promise.resolve(res)).then(function (ab) {
+      var bytes = u8(ab)
+      if (cap > 0 && bytes.length > cap) return bytes.subarray(0, cap)
+      return bytes
+    })
+  }
+
   // ────────────────────────────── 播放器工厂 ──────────────────────────────
   //
   // opts:
@@ -890,10 +938,10 @@
       if (!fetchFn) return Promise.reject(new Error('fetch 不可用'))
       var r = 'bytes=' + (start >= 0 ? start : 0) + '-'
       if (end !== undefined && end >= 0) r += end
+      var limit = end !== undefined && end >= 0 ? end - (start >= 0 ? start : 0) + 1 : PROBE
       return fetchOnce(url, { cache: 'no-store', headers: { Range: r } }).then(function (res) {
         if (!res || !res.ok) throw new Error('http ' + (res && res.status))
-        var buf = res.arrayBuffer ? res.arrayBuffer() : Promise.resolve(res)
-        return buf
+        return readAtMost(res, limit)
       })
     }
 
@@ -1285,7 +1333,7 @@
       })
         .then(function (res) {
           if (!res || !res.ok) throw new Error('probe http ' + (res && res.status))
-          return res.arrayBuffer ? res.arrayBuffer() : res
+          return readAtMost(res, PROBE_BYTES)
         })
         .then(function (ab) {
           var bytes = u8(ab)
@@ -1424,6 +1472,7 @@
     _moofDecodeTime: moofDecodeTime,
     _makeScanner: makeScanner,
     _makeBoxReader: makeBoxReader,
+    _readAtMost: readAtMost,
     _findMoofBoundary: findMoofBoundary,
     _parseSidx: parseSidx,
     _sidxOffsetFor: sidxOffsetFor,

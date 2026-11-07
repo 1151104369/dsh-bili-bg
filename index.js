@@ -47,7 +47,7 @@ export const name = 'dsh-bili-bg'
 export const inject = []
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.3.3'
+export const VERSION = '0.3.4'
 
 const CONFIG_ROUTE = `${ROUTE_PREFIX}/config.json`
 const PLAY_ROUTE = `${ROUTE_PREFIX}/play`

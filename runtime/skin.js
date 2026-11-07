@@ -483,10 +483,19 @@
       onVideoError('调用播放失败：' + (e && e.message ? e.message : e))
       return
     }
-    var settle = function (ok) {
+    var settle = function (ok, err) {
       if (ok) {
         st.playing = true
         st.muted = !want
+        syncButtons()
+        return
+      }
+      var name = err && err.name ? String(err.name) : ''
+      // 只有「浏览器自动播放策略」拦截（NotAllowedError）才该退回静音。
+      // 其余（NotSupportedError / AbortError 等）多半是「源还没就绪 / 刚被替换」，
+      // 绝不能因此把用户静音——那正是之前「切高清后莫名静音」的原因。
+      if (name !== '' && name !== 'NotAllowedError') {
+        st.playing = false
         syncButtons()
         return
       }
@@ -522,7 +531,7 @@
         onVideoError('播放被拒绝')
       }
     }
-    if (played && typeof played.then === 'function') played.then(function () { settle(true) }, function () { settle(false) })
+    if (played && typeof played.then === 'function') played.then(function () { settle(true) }, function (err) { settle(false, err) })
     else settle(true)
   }
 
@@ -633,9 +642,17 @@
     return qualities[0] || wanted || list[0]
   }
 
-  /** 从 play 结果的 dash 信息启动 MSE 播放器。 */
-  function startDash(data) {
+  /** 高清是否希望自动播放（MSE 就绪后再播，避免在源未就绪时 play 被拒 → 误静音）。 */
+  var dashWantPlay = false
+
+  /**
+   * 从 play 结果的 dash 信息启动 MSE 播放器。
+   * @param {object} data play 结果
+   * @param {boolean} [autoPlay] 就绪后是否自动播（缺省沿用当前 desired）
+   */
+  function startDash(data, autoPlay) {
     if (video === null) return
+    dashWantPlay = autoPlay !== false
     var lib = global && global.__DSH_BILI_DASH__
     if (!lib || typeof lib.create !== 'function') {
       degradeTo720p('MSE 播放器不可用')
@@ -669,6 +686,15 @@
     st.hdFallback = ''
     st.hdEffective = false
     switchingSrc = true
+    // 初始化阶段诊断：万一卡住/超时，把阶段链落到 state.hdDiag 里方便定位。
+    var dashPhaseStart = Date.now()
+    var dashPhases = []
+    var recordPhase = function (phase) {
+      dashPhases.push((dashPhases.length ? '>' : '') + phase + '@' + (Date.now() - dashPhaseStart))
+      if (dashPhases.length > 12) dashPhases.shift()
+      st.hdDiag = { status: phase, reason: '', phase: dashPhases.join(''), at: Date.now() }
+    }
+    recordPhase('create')
     // MSE 的 blob 源不参与原生 loop：关掉 loop，让 ended 事件由 onEnded 统一处理
     //（非轮播时手动 seek(0) 续播，轮播时切下一支）。
     try {
@@ -688,22 +714,59 @@
       evictBehind: 30,
       fetchFn: function (url, init) {
         var rel = url === vAbs ? vRel : url === aAbs ? aRel : null
-        return global
-          .fetch(url, init)
-          .catch(function (err) {
-            // 直连 mediaBase 失败（跨源/预检/CORS）→ 回退同源相对地址再试。
-            if (rel) return global.fetch(rel, init)
-            throw err || new Error('dash fetch failed')
-          })
+        // 直连 mediaBase 优先；给它一个较短的超时，卡住（CORS/端口不可达但请求挂着）
+        // 就 abort 并立刻改走同源相对地址，而不是干等 20s 看门狗。
+        function attempt(u) {
+          if (typeof global.AbortController !== 'function') return global.fetch(u, init)
+          var ctrl
+          try {
+            ctrl = new global.AbortController()
+          } catch (e) {
+            return global.fetch(u, init)
+          }
+          var timer = global.setTimeout(function () {
+            try {
+              ctrl.abort()
+            } catch (e) {
+              /* ignore */
+            }
+          }, 6000)
+          var opts = { cache: 'no-store', headers: init && init.headers ? init.headers : undefined, signal: ctrl.signal }
+          return global.fetch(u, opts).then(
+            function (res) {
+              global.clearTimeout(timer)
+              return res
+            },
+            function (err) {
+              global.clearTimeout(timer)
+              throw err
+            },
+          )
+        }
+        return attempt(url).catch(function (err) {
+          if (rel) {
+            st.hdDiag = { status: 'fetch-fallback-rel', reason: err && err.name ? String(err.name) : '', at: Date.now() }
+            return attempt(rel)
+          }
+          throw err || new Error('dash fetch failed')
+        })
       },
       onFallback: function (reason) {
         st.hdFallback = reason || 'MSE 回退'
-        st.hdDiag = { reason: st.hdFallback, status: 'fallback', at: Date.now() }
+        st.hdDiag = {
+          reason: st.hdFallback,
+          status: 'fallback',
+          phase: dashPhases.join(''),
+          env: { origin: global.location ? String(global.location.origin || '') : '', base: absBase },
+          at: Date.now(),
+        }
+        // 立刻落盘，重启/排障时能直接看到卡在哪一阶段。
+        persist()
         degradeTo720p(st.hdFallback)
       },
       onStatus: function (s) {
         if (destroyedFlag()) return
-        st.hdDiag = { status: s, reason: st.hdDiag ? st.hdDiag.reason : '', at: Date.now() }
+        recordPhase(s)
         if (s === 'ready') {
           st.hdEffective = true
           switchingSrc = false
@@ -722,8 +785,13 @@
             dashPlayer.seek(target)
           }
           setStatus('高清播放中（' + (usedHeight ? usedHeight + 'P' : 'DASH') + '）', 'ok')
+          // 关键：这里才真正开播。早先在 load() 之后立刻 play()，此时 MediaSource 还没
+          // 就绪（video.src 可能仍是旧的/已 revoke 的 blob），play 被拒会被误当成
+          // 「自动播放被拦」→ 自动静音。现在改为就绪后再播。
+          if (dashWantPlay && video.paused) tryPlay(!st.muted)
           syncButtons()
           syncQuality()
+          persist()
           return
         }
         if (s === 'starting' || s === 'buffering') {
@@ -740,7 +808,7 @@
       }
     }
     showLayer()
-    tryPlay(!st.muted)
+    // 注意：不在这是调用 tryPlay —— 等 MSE ready（见上面的 onStatus('ready')）。
     updateNow()
     syncButtons()
     persist()
@@ -840,7 +908,7 @@
       var pos = currentPlayPos()
       if (pos !== null) st.pendingSeek = pos
       st.hdFallback = ''
-      startDash(st.current)
+      startDash(st.current, true)
     }
   }
 
@@ -899,8 +967,53 @@
    * @param {{autoPlay?: boolean, hd?: boolean}} [opts] autoPlay=false 时只加载（恢复到上次暂停的位置），不自动播放；
    *   hd 覆盖本次是否请求高清（缺省跟 st.hd；降级回 720p 时显式传 false）
    */
+  var pendingLoad = null
+
+  /** 解析请求带超时：万一 /play 卡住，也要能把 busy 释放掉，避免「切高清没反应」。 */
+  function fetchJsonTimed(url, opts, ms) {
+    if (typeof global.AbortController !== 'function') return fetchJson(url, opts)
+    var ctrl
+    try {
+      ctrl = new global.AbortController()
+    } catch (e) {
+      return fetchJson(url, opts)
+    }
+    var timer = global.setTimeout(function () {
+      try {
+        ctrl.abort()
+      } catch (e) {
+        /* ignore */
+      }
+    }, Number(ms) || 20000)
+    var merged = {}
+    if (opts) for (var k in opts) if (Object.prototype.hasOwnProperty.call(opts, k)) merged[k] = opts[k]
+    merged.signal = ctrl.signal
+    return fetchJson(url, merged).then(
+      function (v) {
+        global.clearTimeout(timer)
+        return v
+      },
+      function (e) {
+        global.clearTimeout(timer)
+        throw e
+      },
+    )
+  }
+
+  function runPendingLoad() {
+    if (pendingLoad === null) return
+    var p = pendingLoad
+    pendingLoad = null
+    loadAndPlay(p.input, p.opts)
+  }
+
   function loadAndPlay(input, opts) {
-    if (st.busy) return
+    if (st.busy) {
+      // 忙碌时不要直接丢弃请求：记住最后一次，当前请求结束后接着执行。
+      // （否则「刚切高清又切回来」这类快速操作会被静默忽略，表现为「点了没反应」。）
+      pendingLoad = { input: input, opts: opts || null }
+      return
+    }
     var autoPlay = !(opts && opts.autoPlay === false)
     var wantHd = opts && typeof opts.hd === 'boolean' ? opts.hd : st.hd === true
     var query = str(input).trim()
@@ -913,7 +1026,7 @@
     syncButtons()
     var playUrl = ROUTES.play + '?bvid=' + encodeURIComponent(query)
     if (wantHd) playUrl += '&hd=1&qn=' + String(st.hdQuality)
-    fetchJson(playUrl, { cache: 'no-store' })
+    fetchJsonTimed(playUrl, { cache: 'no-store' }, 20000)
       .then(
         function (data) {
           st.busy = false
@@ -966,7 +1079,7 @@
             }
             // startDash 自己会写「高清缓冲中…」→ MSE 真正就绪（ready）才写「高清播放中」，
             // 避免请求还卡着就骗用户说在播（这正是之前「提示播放中但没画面」的观感来源）。
-            startDash(data)
+            startDash(data, autoPlay)
             updateNow()
             syncButtons()
             syncQuality()
@@ -979,6 +1092,9 @@
             fallbackNote = String(data.fallback)
             st.hdFallback = fallbackNote
             st.hdEffective = false
+            // 与 MSE 失败时的行为保持一致：高清实际没生效，就把开关关掉，
+            // 避免「高清已开 + 已回退」这种自相矛盾的显示。
+            st.hd = false
             destroyDash()
           }
           var src = data.src
@@ -1040,6 +1156,11 @@
           syncButtons()
         },
       )
+      .then(function () {
+        runPendingLoad()
+      }, function () {
+        runPendingLoad()
+      })
   }
 
   function playQueueIndex(i) {

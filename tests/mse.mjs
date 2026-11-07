@@ -289,6 +289,33 @@ ok('exposes parse helpers', !!(dash._boxHeaderAt && dash._initEndOf && dash._med
   ok('parseSidx returns null for non-sidx', dash._parseSidx(notSidx, init.length) === null)
 }
 
+// readAtMost：CDN 忽略 Range、返回整条 2GB 流时，init 探针必须读够上限就停（否则会挂到超时）。
+{
+  let produced = 0
+  const chunk = new Uint8Array(1024).fill(1)
+  const res = {
+    body: {
+      getReader() {
+        return {
+          read() {
+            produced += 1
+            if (produced > 100000) return new Promise(() => {}) // 模拟“永远还有更多”
+            return Promise.resolve({ done: false, value: Uint8Array.from(chunk) })
+          },
+          cancel() {},
+        }
+      },
+    },
+  }
+  const bytes = await dash._readAtMost(res, 4096)
+  ok('readAtMost caps at limit on endless stream', bytes.length >= 4096 && bytes.length < 4096 + 1024, bytes.length)
+  ok('readAtMost cancels early (few chunks)', produced <= 5, produced)
+  // arrayBuffer 兜底路径也得截断
+  const res2 = { arrayBuffer: () => Promise.resolve(new Uint8Array(10000).fill(2)) }
+  const bytes2 = await dash._readAtMost(res2, 300)
+  ok('readAtMost truncates arrayBuffer fallback', bytes2.length === 300, bytes2.length)
+}
+
 // box 切分器 / fragment 组装：任意粒度分块（包括把 mdat 从中间切断）都必须切出完整 box。
 // 回归：MSE 解析器有状态，若 append 停在 mdat 中间，下一次 append 新 moof 会 MEDIA_ERR_DECODE。
 {

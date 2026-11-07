@@ -488,6 +488,8 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
   }
 
   let hdAuth = { loggedIn: true, account: { uname: 'HD测试', mid: 8 } }
+  // 模拟「服务端说拿不到高清」：hd=1 仍返回 hd:false + fallback + 可播单文件
+  let hdServerFallback = false
   function hdFetch(url, opts) {
     const u = String(url)
     let payload = {}
@@ -497,6 +499,18 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
     }
     // 高清请求：返回 DASH 分轨（照真实 B 站：每个清晰度有 avc1/hvc1/av01 三条 → 共 12 条）
     else if (u.includes('/play') && u.includes('hd=1')) {
+      if (hdServerFallback) {
+        payload = {
+          ok: true,
+          hd: false,
+          fallback: '此时拿不到高清分轨，已回退 720p',
+          bvid: 'BV1HDTEST',
+          title: '高清测试',
+          src: '/dsh-bili/media?bvid=BV1HDTEST&cid=1',
+          duration: 200,
+          quality: 64,
+        }
+      } else {
       const mk = (index, id, height, codecs) => ({
         index,
         id,
@@ -535,6 +549,7 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
           { index: 1, id: 30280, codecs: 'mp4a.40.2', mimeType: 'audio/mp4', media: '/dsh-bili/media?bvid=BV1HDTEST&cid=1&kind=audio&idx=1&qn=80' },
         ],
         dash: { defaultVideoIndex: 0, defaultAudioIndex: 0 },
+      }
       }
     }
     // 单文件回退
@@ -637,6 +652,21 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
   ok('fallback label shows 已回退 720p', !!hdStateEl && String(hdStateEl.textContent) === '已回退 720p', hdStateEl && hdStateEl.textContent)
   const hdBtnAfter = findById(hdDoc.body, 'dsbili-hd-btn')
   ok('fallback toggle button is not "已开"', !!hdBtnAfter && hdBtnAfter.textContent.indexOf('已开') === -1, hdBtnAfter && hdBtnAfter.textContent)
+  // 服务端明确回退（hd:false + fallback）时，开关也要关掉，状态保持一致
+  hdServerFallback = true
+  hdApi.play('BV1HDTEST')
+  await new Promise((r) => setTimeout(r, 80))
+  hdApi.hd()
+  await new Promise((r) => setTimeout(r, 120))
+  ok('server-side fallback turns hd off too', hdApi.state.hd === false, hdApi.state.hd)
+  const hdStateEl2 = findByClass(hdDoc.body, 'dsbili-hd-state')
+  ok('server-side fallback label is 已回退 720p', !!hdStateEl2 && String(hdStateEl2.textContent) === '已回退 720p', hdStateEl2 && hdStateEl2.textContent)
+  ok('server-side fallback keeps a playable single-file src', (() => {
+    const v = findById(hdDoc.body, 'dsbili-video')
+    const s = v ? String(v.src) : ''
+    return !!v && s.indexOf('/dsh-bili/media') !== -1 && s.indexOf('kind=video') === -1
+  })())
+  hdServerFallback = false
   hdWin.__DSH_BILI_DASH__ = fakeDashLib
   hdApi.teardown()
 }
