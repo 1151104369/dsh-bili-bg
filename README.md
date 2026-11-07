@@ -15,6 +15,8 @@
   - 播放/暂停、上一支/下一支、静音/音量、专注隐藏
   - **进度条**（可拖动跳转，显示 `当前 / 总时长`）
   - **倍速**（0.5x ~ 2x）
+  - **轮播**（放完自动切下一支）与 **单曲循环**（`🔂 循环`，放完回开头）两个独立开关；
+    单曲循环在**高清与 720p 模式都生效**（轮播开启时轮播优先）。
   - **首页推荐 / 热门 / 排行榜**切换、轮播（放完自动下一支）
     - 默认来源：**已登录 → 首页推荐；未登录 → 热门**（未登录点首页推荐会提示需登录）
     - 手动切换过来源后记住你的选择，不再自动改；退出登录时若停在首页推荐会自动回落热门
@@ -31,6 +33,9 @@
   - **按当前播放画质下载**：720p 模式 → 720p 单文件；高清模式 → 对应清晰度的 DASH 分轨（如 1080p）。
   - 有 **ffmpeg** 时自动 `-c copy` 合轨成单个 mp4（`DSH_BILI_FFMPEG` 可指定路径）；没有 ffmpeg 时
     分别保存**视频轨 + 音频轨**两个文件（画质不降级，面板会提示）。
+  - **ffmpeg 一键下载**：面板下载区会显示 ffmpeg 状态，未检测到时点「⬇ 下载 ffmpeg」自动下载安装
+    单文件版（默认走 npmmirror 的 `@ffmpeg-installer` 平台包，约 22MB；也支持手动下载后放到
+    `$DSH_HOME/dsh-bili-bg-bin/ffmpeg.exe`，或用 `DSH_BILI_FFMPEG` 指定路径）。装好后高清下载自动合轨。
 - **记住播放进度**：每 5 秒 + 暂停/关闭页面时保存；重启后**播放中退出**自动接着播
   （无手势时浏览器会静音，点 🔊 开声音），**暂停时退出**则恢复那一支到原进度但保持暂停，
   点播放继续——不会丢视频、不用回列表重选
@@ -80,7 +85,8 @@ lib/bili.js         B 站接口客户端 + 带 Range 的本地播放流代理 + 
 lib/auth.js         二维码登录、Cookie 持久化（收紧权限）、账号信息、退出
 lib/wbi.js          WBI 签名（mixin key + w_rid，首页推荐接口必需）
 lib/qr.js           纯 Node 内建 MIT 二维码编码 + PNG 渲染（无需再登录态二维码图）
-lib/download.js     视频下载：流式写 .part → 原子 rename，并发 2、内存任务表
+lib/download.js     视频下载：按播放画质取源、流式写 .part、并发 2、内存任务表、ffmpeg 合轨
+lib/ffmpeg.js       ffmpeg 探测 / 一键下载（npmmirror 平台包 tgz，内置最小 tar 解析）
 lib/save-dialog.js  Windows「另存为」对话框（PowerShell + WinForms，零依赖）
 lib/injections.js   webserver/index-inject 结构化注入行
 runtime/skin.js     浏览器端：背景层 + 悬浮胶囊 + 控制面板 + 账号区 + 进度/倍速/清屏 + 高清开关
@@ -120,6 +126,7 @@ tests/mse.mjs       MSE 播放器单测（ISO-BMFF 解析 + 装配/回退）
 - `DSH_BILI_DOWNLOAD_DIR`：覆盖下载保存根目录（默认走系统下载 KnownFolder）。
 - `DSH_BILI_NO_DIALOG=1`：禁用「另存为」对话框，直接存默认目录（无头环境/自动化测试用）。
 - `DSH_BILI_FFMPEG`：指定 ffmpeg 可执行文件路径（高清下载自动合轨用；不设则自动在 PATH/常见目录找）。
+- `DSH_BILI_FFMPEG_URL`：覆盖 ffmpeg 一键下载地址（.gz 单文件或 .tgz npm 包均可）。
 - `DSH_BILI_DEBUG=1`：B 站接口请求调试日志。
 
 ## 后续计划（Roadmap）

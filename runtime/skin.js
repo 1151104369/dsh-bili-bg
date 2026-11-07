@@ -50,6 +50,12 @@
         list: str(cfg.download.list),
       }
     : null
+  ROUTES.ffmpeg = isObj(cfg.ffmpeg)
+    ? {
+        status: str(cfg.ffmpeg.status),
+        install: str(cfg.ffmpeg.install),
+      }
+    : null
 
   // ────────────────────────────── 小工具 ──────────────────────────────
 
@@ -106,6 +112,8 @@
     source: d.source === 'ranking' ? 'ranking' : 'popular',
     count: num(d.count, 12, 1, 30),
     carousel: false,
+    // 单曲循环：两种模式都支持；轮播开启时轮播优先（放完切下一支）。
+    loop: true,
     focusOff: false,
     veil: num(d.veil, 0.3, 0, 0.92),
     veilLight: num(d.veillight, 0.3, 0, 0.92),
@@ -168,6 +176,9 @@
   var muteBtn = null
   var volRange = null
   var carouselBtn = null
+  var loopBtn = null
+  // 循环回开头后，等 seek 落地再 play（MSE 里 play 太早会被拒）。
+  var seekPlayPending = false
   var focusBtn = null
   var surfaceRange = null
   var surfaceVal = null
@@ -195,6 +206,11 @@
   var dlDir = ''
   var dlTaskId = null
   var dlTimer = null
+  // ffmpeg（高清下载自动合轨）：状态行 + 一键下载按钮
+  var ffmpegBtn = null
+  var ffmpegStatusEl = null
+  var ffmpegPollTimer = null
+  var ffmpegInfo = null
   // 上一次轮询的 {时间, 已下载字节}，用来估算下载速度。
   var dlPrev = { at: 0, received: 0 }
   // 登录后高清：MSE 播放器句柄 + 面板里的画质控件（隐藏时可能为 null）。
@@ -851,6 +867,7 @@
         })
       },
       onFallback: function (reason) {
+        seekPlayPending = false
         st.hdFallback = reason || 'MSE 回退'
         st.hdDiag = {
           reason: st.hdFallback,
@@ -862,6 +879,12 @@
         // 立刻落盘，重启/排障时能直接看到卡在哪一阶段。
         persist()
         degradeTo720p(st.hdFallback)
+      },
+      // 循环播放：seek 回 0 真正落地后再开播（MSE 里 seek 未完成时 play 会被拒）。
+      onSeeked: function () {
+        if (!seekPlayPending) return
+        seekPlayPending = false
+        if (st.loop === true) tryPlay(!st.muted)
       },
       onStatus: function (s) {
         if (destroyedFlag()) return
@@ -1284,7 +1307,7 @@
             video.removeAttribute('data-shown')
             video.removeAttribute('data-mse')
             video.src = src
-            video.loop = !st.carousel
+            video.loop = !st.carousel && st.loop === true
             video.setAttribute('data-fit', st.fit === 'cover' ? 'cover' : 'width')
             try {
               video.playbackRate = st.rate
@@ -1384,14 +1407,22 @@
       next()
       return
     }
-    // 高清（MSE）下没有「自动 loop」兜底（blob 源不会循环），这里手动回到开头续播，
-    // 与单文件模式的 loop=true 行为一致（背景一直有画面）。
-    if (st.hdEffective && dashPlayer !== null) {
-      st.pendingSeek = 0
-      dashPlayer.seek(0)
-      tryPlay(!st.muted)
+    if (st.loop !== true) {
+      st.playing = false
+      syncButtons()
+      setStatus('播放结束（循环已关）', '')
       return
     }
+    // 高清（MSE）下 blob 源不参与原生 loop，这里手动回到开头。
+    // 注意：seek 是异步的（0 处的旧缓冲可能已被回收，需要重新拉分片），
+    // 所以**不能在 seek 后立刻 play**（会被拒/暂停）——等 onSeeked 回调再播。
+    if (st.hdEffective && dashPlayer !== null) {
+      seekPlayPending = true
+      dashPlayer.seek(0)
+      return
+    }
+    // 单文件：video.loop=true 时浏览器自己循环，理论上不会走到 ended；
+    // 万一是 loop 刚被关掉的瞬间，就正常收尾。
     st.playing = false
     syncButtons()
     setStatus('播放结束', '')
@@ -1763,6 +1794,7 @@
       sourcePicked: st.sourcePicked === true,
       count: st.count,
       carousel: st.carousel,
+      loop: st.loop === true,
       muted: st.muted,
       volume: st.volume,
       focusOff: st.focusOff,
@@ -1838,6 +1870,7 @@
         st.sourcePicked = s.sourcePicked === true
         st.count = num(s.count, st.count, 1, 30)
         st.carousel = s.carousel === true
+        if (typeof s.loop === 'boolean') st.loop = s.loop
         st.muted = s.muted === true
         st.volume = num(s.volume, st.volume, 0, 1)
         st.veil = num(s.veil, st.veil, 0, 0.92)
@@ -1961,6 +1994,149 @@
     if (total > 0) text += ' / ' + formatBytes(total)
     if (speed > 0) text += ' · ' + formatBytes(speed) + '/s'
     return text
+  }
+
+  // ────────────────────────────── ffmpeg（高清下载合轨）──────────────────────────────
+
+  function ffmpegRoutes() {
+    return ROUTES.ffmpeg && ROUTES.ffmpeg.status ? ROUTES.ffmpeg : null
+  }
+
+  function setFfmpegLine(text, level) {
+    if (ffmpegStatusEl !== null) {
+      ffmpegStatusEl.textContent = text
+      ffmpegStatusEl.setAttribute('data-level', level || '')
+    }
+  }
+
+  /** 渲染 ffmpeg 状态行/按钮（未就绪时给一键下载）。 */
+  function syncFfmpegUi() {
+    if (ffmpegStatusEl === null || ffmpegBtn === null) return
+    var info = ffmpegInfo || {}
+    var inst = info.install || {}
+    if (inst.state === 'downloading') {
+      var pct = Number(inst.total) > 0 ? Math.min(100, Math.floor((Number(inst.received) / Number(inst.total)) * 100)) : -1
+      setFfmpegLine(
+        '下载 ffmpeg ' + (pct >= 0 ? pct + '%' : formatBytes(inst.received)) + (Number(inst.total) > 0 ? ' · ' + formatBytes(inst.total) : ''),
+        '',
+      )
+      ffmpegBtn.textContent = '✕ 取消下载'
+      ffmpegBtn.disabled = false
+      return
+    }
+    if (inst.state === 'verifying') {
+      setFfmpegLine('校验 ffmpeg…', '')
+      ffmpegBtn.textContent = '✕ 取消下载'
+      ffmpegBtn.disabled = false
+      return
+    }
+    if (info.found) {
+      setFfmpegLine('ffmpeg 已就绪：高清下载会自动合轨成单个 mp4', 'ok')
+      ffmpegBtn.textContent = '✓ 已就绪'
+      ffmpegBtn.disabled = true
+      if (ffmpegStatusEl !== null) ffmpegStatusEl.setAttribute('title', String(info.path || ''))
+      return
+    }
+    var hint = '未检测到 ffmpeg：高清下载会分别保存视频/音频两个文件'
+    if (inst.state === 'error' && inst.error) hint += '（上次下载失败：' + inst.error + '）'
+    setFfmpegLine(hint, inst.state === 'error' ? 'error' : '')
+    ffmpegBtn.textContent = '⬇ 下载 ffmpeg（约 30MB）'
+    ffmpegBtn.disabled = false
+    if (ffmpegStatusEl !== null) {
+      ffmpegStatusEl.setAttribute(
+        'title',
+        '一键下载地址：' + String(info.downloadUrl || '') + '\n也可以手动下载后放到：' + String(info.managedPath || ''),
+      )
+    }
+  }
+
+  /** 拉一次 ffmpeg 状态。 */
+  function loadFfmpegStatus() {
+    var r = ffmpegRoutes()
+    if (!r) return
+    fetchJson(r.status, { cache: 'no-store' }).then(
+      function (data) {
+        if (!data || data.ok !== true) return
+        ffmpegInfo = data
+        syncFfmpegUi()
+      },
+      function () {
+        /* 探测失败就当没有 */
+      },
+    )
+  }
+
+  function stopFfmpegPoll() {
+    if (ffmpegPollTimer !== null) {
+      try {
+        global.clearTimeout(ffmpegPollTimer)
+      } catch (e) {
+        /* ignore */
+      }
+      ffmpegPollTimer = null
+    }
+  }
+
+  /** 轮询安装进度；done/error/cancelled 后停并刷新。 */
+  function pollFfmpegInstall() {
+    var r = ffmpegRoutes()
+    if (!r || !r.install) return
+    stopFfmpegPoll()
+    ffmpegPollTimer = global.setTimeout(function () {
+      ffmpegPollTimer = null
+      fetchJson(r.install, { cache: 'no-store' }).then(
+        function (data) {
+          if (!data || data.ok !== true) {
+            stopFfmpegPoll()
+            return
+          }
+          if (ffmpegInfo) ffmpegInfo.install = data
+          else ffmpegInfo = { install: data }
+          syncFfmpegUi()
+          if (data.state === 'downloading' || data.state === 'verifying') {
+            pollFfmpegInstall()
+          } else {
+            loadFfmpegStatus()
+          }
+        },
+        function () {
+          stopFfmpegPoll()
+        },
+      )
+    }, 900)
+  }
+
+  /** 点按钮：没装 → 一键下载；下载中 → 取消。 */
+  function toggleFfmpegInstall() {
+    var r = ffmpegRoutes()
+    if (!r || !r.install) {
+      setFfmpegLine('当前环境不支持自动下载 ffmpeg', 'error')
+      return
+    }
+    var inst = ffmpegInfo && ffmpegInfo.install ? ffmpegInfo.install : null
+    if (inst && (inst.state === 'downloading' || inst.state === 'verifying')) {
+      fetchJson(r.install, { method: 'DELETE' }).then(
+        function () {
+          loadFfmpegStatus()
+        },
+        function () {
+          loadFfmpegStatus()
+        },
+      )
+      return
+    }
+    setFfmpegLine('开始下载 ffmpeg…', '')
+    fetchJson(r.install, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(
+      function (data) {
+        if (ffmpegInfo) ffmpegInfo.install = data
+        else ffmpegInfo = { install: data }
+        syncFfmpegUi()
+        pollFfmpegInstall()
+      },
+      function (error) {
+        setFfmpegLine('下载 ffmpeg 失败：' + (error && error.message ? error.message : error), 'error')
+      },
+    )
   }
 
   function renderDownloadTask(t) {
@@ -2171,6 +2347,11 @@
       rb.setAttribute('data-on', Number(rb.getAttribute('data-rate')) === st.rate ? '1' : '0')
     }
     if (carouselBtn !== null) carouselBtn.setAttribute('aria-pressed', st.carousel ? 'true' : 'false')
+    if (loopBtn !== null) {
+      loopBtn.setAttribute('aria-pressed', st.loop ? 'true' : 'false')
+      loopBtn.setAttribute('data-on', st.loop ? '1' : '0')
+      loopBtn.textContent = st.loop ? '🔂 循环' : '🔁 循环关'
+    }
     if (focusBtn !== null) {
       focusBtn.textContent = st.focusOff ? '☀ 恢复显示' : '🌙 专注隐藏'
       focusBtn.setAttribute('data-on', st.focusOff ? '1' : '0')
@@ -2191,6 +2372,7 @@
   function syncControls() {
     syncButtons()
     if (carouselBtn !== null) carouselBtn.setAttribute('aria-pressed', st.carousel ? 'true' : 'false')
+    if (video !== null) video.loop = !st.carousel && st.loop === true
     if (inputEl !== null && st.current && st.current.bvid) inputEl.value = st.current.bvid
   }
 
@@ -2286,6 +2468,15 @@
     st.clear = !st.clear
     applyClear()
     syncButtons()
+  }
+
+  /** 单曲循环开关（高清/单文件都支持）。 */
+  function toggleLoop() {
+    st.loop = !st.loop
+    if (video !== null) video.loop = !st.carousel && st.loop === true
+    if (!st.loop) seekPlayPending = false
+    syncButtons()
+    persist()
   }
 
   /** 设置播放倍速。 */
@@ -2566,6 +2757,23 @@
     bodyEl.appendChild(dlRow)
     loadDownloadDir()
 
+    // ffmpeg 状态 / 一键下载（只有宿主提供 ffmpeg 路由时才显示）
+    if (ffmpegRoutes()) {
+      var ffRow = el('div', 'dsbili-row dsbili-ffmpegrow')
+      var ffHead = el('div', 'dsbili-rowhead')
+      ffHead.appendChild(el('span', null, 'ffmpeg（高清合轨）'))
+      ffRow.appendChild(ffHead)
+      ffmpegBtn = el('button', 'dsbili-btn', '⬇ 下载 ffmpeg（约 30MB）')
+      ffmpegBtn.id = 'dsbili-ffmpeg-btn'
+      ffmpegBtn.addEventListener('click', toggleFfmpegInstall)
+      ffmpegStatusEl = el('div', 'dsbili-status dsbili-ffmpeg-status', '检测中…')
+      ffmpegStatusEl.setAttribute('data-level', '')
+      ffRow.appendChild(ffmpegBtn)
+      ffRow.appendChild(ffmpegStatusEl)
+      bodyEl.appendChild(ffRow)
+      loadFfmpegStatus()
+    }
+
     // 播放控制
     var row1 = el('div', 'dsbili-btnrow')
     playBtn = el('button', 'dsbili-btn', '▶ 播放')
@@ -2638,7 +2846,7 @@
     carouselBtn = el('button', 'dsbili-btn', '🔁 轮播')
     carouselBtn.addEventListener('click', function () {
       st.carousel = !st.carousel
-      if (video !== null) video.loop = !st.carousel
+      if (video !== null) video.loop = !st.carousel && st.loop === true
       if (st.carousel && !st.queue.length) {
         loadQueue().then(function () {
           if (st.queue.length && st.current === null) playQueueIndex(0)
@@ -2653,7 +2861,13 @@
       loadQueue()
       persist()
     })
+    // 单曲循环：高清与单文件模式都支持；轮播开启时轮播优先（放完切下一支）。
+    loopBtn = el('button', 'dsbili-btn', '🔂 循环')
+    loopBtn.id = 'dsbili-loop-btn'
+    loopBtn.setAttribute('title', '单曲循环：放完回到开头继续（高清/720p 都生效；轮播开启时优先轮播）')
+    loopBtn.addEventListener('click', toggleLoop)
     row3.appendChild(carouselBtn)
+    row3.appendChild(loopBtn)
     row3.appendChild(refreshBtn)
 
     var row4 = el('div', 'dsbili-btnrow')
@@ -2872,7 +3086,25 @@
       prev: prev,
       clear: toggleClear,
       focus: toggleFocus,
+      loop: toggleLoop,
+      // 供自动化/排障：统一走当前模式的 seek（高清 → MSE 播放器；否则 media element）
+      seek: function (t) {
+        var target = Number(t)
+        if (!isFinite(target)) return
+        if (dashPlayer !== null) dashPlayer.seek(target)
+        else if (video !== null) {
+          try {
+            video.currentTime = target
+          } catch (e) {
+            /* ignore */
+          }
+        }
+      },
       hd: toggleHd,
+      ffmpeg: {
+        refresh: loadFfmpegStatus,
+        install: toggleFfmpegInstall,
+      },
       open: openPanel,
       close: closePanel,
       download: startDownloadCurrent,
@@ -2884,6 +3116,7 @@
       },
       teardown: function () {
         stopDownloadPoll()
+        stopFfmpegPoll()
         stopWarmSingleFile()
         destroyDash()
         hideLayer()

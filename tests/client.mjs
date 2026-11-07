@@ -121,6 +121,7 @@ function makeDocument() {
 const document = makeDocument()
 // 记录 POST /download 的 body，用来断言「按当前播放画质下载」请求字段。
 const downloadBodies = []
+let ffmpegInstallCalls = 0
 
 function stubFetch(url, opts) {
   const u = String(url)
@@ -135,6 +136,22 @@ function stubFetch(url, opts) {
     payload = { ok: true, key: 'k123', image: '/dsh-bili/auth/qr?key=k123' }
   } else if (u.includes('/auth/poll')) {
     payload = { ok: true, status: 'wait', message: '等待扫码' }
+  } else if (u.includes('/ffmpeg/install')) {
+    ffmpegInstallCalls += 1
+    payload =
+      opts && opts.method === 'POST'
+        ? { ok: true, state: 'downloading', received: 0, total: 100 }
+        : { ok: true, state: 'downloading', received: 50, total: 100 }
+  } else if (u.includes('/ffmpeg')) {
+    payload = {
+      ok: true,
+      found: false,
+      source: '',
+      path: '',
+      managedPath: 'C:/fake/ffmpeg.exe',
+      downloadUrl: 'https://example.com/ffmpeg.gz',
+      install: { state: 'idle', received: 0, total: 0 },
+    }
   } else if (u.includes('/downloads')) {
     payload = { ok: true, list: [], dir: '/Downloads/DSH-B站背景' }
   } else if (u.includes('/download')) {
@@ -196,6 +213,10 @@ const window = {
       create: '/dsh-bili/download',
       status: '/dsh-bili/download',
       list: '/dsh-bili/downloads',
+    },
+    ffmpeg: {
+      status: '/dsh-bili/ffmpeg',
+      install: '/dsh-bili/ffmpeg/install',
     },
     defaults: { source: 'popular', count: 12, volume: 0.8, veil: 0.32, veillight: 0.3 },
   },
@@ -333,6 +354,25 @@ ok('download button enabled after current loaded', !!dlBtn && dlBtn.disabled ===
 // 面板应显示宿主解析出的保存目录（避免用户不知道文件去哪了）
 const dlDirEl = findByClass(document.body, 'dsbili-dl-dir')
 ok('download dir shown in panel', !!dlDirEl && String(dlDirEl.textContent).includes('DSH-B站背景'), dlDirEl && dlDirEl.textContent)
+
+// ffmpeg：未检测到时显示「下载 ffmpeg」按钮 + 说明；点一下会发起安装请求。
+const ffBtn = document.getElementById ? null : null
+const ffBtnEl = findById(document.body, 'dsbili-ffmpeg-btn')
+const ffStatusEl = findByClass(document.body, 'dsbili-ffmpeg-status')
+ok('ffmpeg section built (no binary → download button)', !!ffBtnEl && String(ffBtnEl.textContent).includes('下载 ffmpeg'), ffBtnEl && ffBtnEl.textContent)
+ok('ffmpeg status explains two-file fallback', !!ffStatusEl && String(ffStatusEl.textContent).includes('未检测到 ffmpeg'), ffStatusEl && ffStatusEl.textContent)
+api.ffmpeg.install()
+await new Promise((r) => setTimeout(r, 80))
+ok('ffmpeg install request fired', ffmpegInstallCalls >= 1, ffmpegInstallCalls)
+
+// 循环开关：默认开；点一下关、再点开；单文件模式 video.loop 跟随。
+const loopBtnEl = findById(document.body, 'dsbili-loop-btn')
+ok('loop toggle button built', !!loopBtnEl)
+ok('loop on by default', api.state.loop === true && loopBtnEl.getAttribute('data-on') === '1', api.state.loop)
+api.loop()
+ok('loop off after toggle', api.state.loop === false && loopBtnEl.getAttribute('data-on') === '0', api.state.loop)
+api.loop()
+ok('loop on again', api.state.loop === true && loopBtnEl.getAttribute('data-on') === '1', api.state.loop)
 
 // 下载状态行要显示「大小 / 总大小」（以及后续轮询的速度）。
 api.download()

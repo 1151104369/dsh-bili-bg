@@ -37,6 +37,7 @@ import {
 import { qrPng } from './lib/qr.js'
 import { createDownloader } from './lib/download.js'
 import { pickSavePath } from './lib/save-dialog.js'
+import { describeFfmpeg, installFfmpeg, getInstallState, cancelInstall } from './lib/ffmpeg.js'
 import { BOOTSTRAP_GLOBAL, buildInjectionRows } from './lib/injections.js'
 
 export { BOOTSTRAP_GLOBAL, ROUTE_PREFIX }
@@ -47,7 +48,7 @@ export const name = 'dsh-bili-bg'
 export const inject = []
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.4.0'
+export const VERSION = '0.5.0'
 
 const CONFIG_ROUTE = `${ROUTE_PREFIX}/config.json`
 const PLAY_ROUTE = `${ROUTE_PREFIX}/play`
@@ -60,6 +61,8 @@ const AUTH_STATUS_ROUTE = `${ROUTE_PREFIX}/auth/status`
 const AUTH_LOGOUT_ROUTE = `${ROUTE_PREFIX}/auth/logout`
 const DOWNLOAD_ROUTE = `${ROUTE_PREFIX}/download`
 const DOWNLOADS_ROUTE = `${ROUTE_PREFIX}/downloads`
+const FFMPEG_ROUTE = `${ROUTE_PREFIX}/ffmpeg`
+const FFMPEG_INSTALL_ROUTE = `${ROUTE_PREFIX}/ffmpeg/install`
 
 /** 已生成、尚未扫码/未过期的二维码内容（按 qrcode_key 索引，仅内存，随扫码/过期清理）。 */
 const pendingQrs = new Map()
@@ -210,6 +213,10 @@ export function apply(ctx) {
       create: DOWNLOAD_ROUTE,
       status: DOWNLOAD_ROUTE,
       list: DOWNLOADS_ROUTE,
+    },
+    ffmpeg: {
+      status: FFMPEG_ROUTE,
+      install: FFMPEG_INSTALL_ROUTE,
     },
     defaults: {
       source: 'popular',
@@ -549,6 +556,67 @@ export function apply(ctx) {
             } catch (error) {
               sendJson(res, 500, { ok: false, error: describe(error) })
             }
+          },
+        }),
+      )
+
+      // ffmpeg 状态：供下载区块显示「已就绪 / 未检测到」，并给出一键下载地址。
+      disposers.push(
+        child.webServer.register({
+          kind: 'exact',
+          path: FFMPEG_ROUTE,
+          handler: (req, res) => {
+            try {
+              sendJson(res, 200, { ok: true, ...describeFfmpeg(homeDir) })
+            } catch (error) {
+              sendJson(res, 500, { ok: false, error: describe(error) })
+            }
+          },
+        }),
+      )
+
+      // 一键下载单文件 ffmpeg：
+      //   POST → 后台开始下载（立即返回当前状态，进度用 GET 轮询）
+      //   GET  → 当前安装状态
+      //   DELETE → 取消下载
+      disposers.push(
+        child.webServer.register({
+          kind: 'exact',
+          path: FFMPEG_INSTALL_ROUTE,
+          handler: (req, res) => {
+            const method = String(req.method ?? 'GET').toUpperCase()
+            if (method === 'GET') {
+              sendJson(res, 200, { ok: true, ...getInstallState() })
+              return
+            }
+            if (method === 'DELETE') {
+              const cancelled = cancelInstall()
+              sendJson(res, 200, { ok: true, cancelled, ...getInstallState() })
+              return
+            }
+            if (method !== 'POST') {
+              sendJson(res, 405, { ok: false, error: 'use GET/POST/DELETE' })
+              return
+            }
+            // 可选 body {url}：允许用户手动指定下载地址（默认用内置源）。
+            readBody(req, 4096)
+              .then((text) => {
+                let url
+                try {
+                  const parsed = JSON.parse(text || '{}')
+                  if (parsed && typeof parsed.url === 'string' && /^https?:\/\//i.test(parsed.url.trim())) {
+                    url = parsed.url.trim()
+                  }
+                } catch {
+                  /* 忽略无效 body，用默认源 */
+                }
+                // 后台跑，别阻塞 HTTP；状态通过 GET 查询。
+                installFfmpeg({ homeDir, url }).catch(() => {
+                  /* installFfmpeg 内部已把错误写进状态 */
+                })
+                sendJson(res, 200, { ok: true, ...getInstallState() })
+              })
+              .catch((error) => sendJson(res, 400, { ok: false, error: describe(error) }))
           },
         }),
       )

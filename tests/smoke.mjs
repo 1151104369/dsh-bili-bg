@@ -21,6 +21,7 @@ const { apply, VERSION } = await import('../index.js')
 const { qrPng, qrMatrix } = await import('../lib/qr.js')
 const { parsePoll, saveAuth } = await import('../lib/auth.js')
 const { pickDashTracks, findFfmpeg } = await import('../lib/download.js')
+const { extractTarEntry } = await import('../lib/ffmpeg.js')
 
 const routes = new Map()
 const handlers = {}
@@ -232,8 +233,80 @@ ok('download unknown id returns 404', dlUnknown.ok === false && typeof dlUnknown
   const fakeFf = path.join(TMP_HOME, 'ffmpeg-fake.exe')
   fsx.writeFileSync(fakeFf, '')
   process.env.DSH_BILI_FFMPEG = fakeFf
-  ok('findFfmpeg honours DSH_BILI_FFMPEG', findFfmpeg() === fakeFf, findFfmpeg())
+  ok('findFfmpeg honours DSH_BILI_FFMPEG', findFfmpeg(TMP_HOME) === fakeFf, findFfmpeg(TMP_HOME))
   delete process.env.DSH_BILI_FFMPEG
+}
+
+// ⑤ ffmpeg 一键下载：本地假 gz 源 + 跳过可执行校验，验证下载→解压→落盘→状态探测。
+{
+  const zlib = await import('node:zlib')
+  const payload = Buffer.from('fake-ffmpeg-binary-'.repeat(200))
+  const gz = zlib.gzipSync(payload)
+  const fakeServer = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': gz.length })
+    res.end(gz)
+  })
+  await new Promise((r) => fakeServer.listen(0, '127.0.0.1', r))
+  const fakeUrl = `http://127.0.0.1:${fakeServer.address().port}/ffmpeg.gz`
+  process.env.DSH_BILI_FFMPEG_SKIP_VERIFY = '1'
+  const started = await (
+    await fetch(base + '/dsh-bili/ffmpeg/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: fakeUrl }),
+    })
+  ).json()
+  ok('ffmpeg install starts', started.ok === true && ['downloading', 'verifying', 'done'].includes(started.state), started.state)
+  let stFinal = started
+  for (let i = 0; i < 80; i += 1) {
+    await new Promise((r) => setTimeout(r, 100))
+    stFinal = await (await fetch(base + '/dsh-bili/ffmpeg/install')).json()
+    if (stFinal.state === 'done' || stFinal.state === 'error') break
+  }
+  ok('ffmpeg install reaches done', stFinal && stFinal.state === 'done', stFinal && stFinal.error)
+  const managed = path.join(TMP_HOME, 'dsh-bili-bg-bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+  ok(
+    'ffmpeg managed file written with exact bytes',
+    fsx.existsSync(managed) && Buffer.compare(fsx.readFileSync(managed), payload) === 0,
+    fsx.existsSync(managed) ? fsx.statSync(managed).size : 'missing',
+  )
+  const stDetect = await (await fetch(base + '/dsh-bili/ffmpeg')).json()
+  ok(
+    'ffmpeg status detects managed binary',
+    stDetect.ok === true && stDetect.found === true && stDetect.source === 'managed',
+    { found: stDetect.found, source: stDetect.source },
+  )
+  delete process.env.DSH_BILI_FFMPEG_SKIP_VERIFY
+  fakeServer.close()
+}
+
+// ⑤' 内置最小 tar 解析器（npm 平台包 .tgz 里取 ffmpeg.exe）：构造两个条目的 tar 验证。
+{
+  function tarHeader(name, size) {
+    const h = Buffer.alloc(512)
+    h.write(name, 0, 'utf8')
+    h.write('0000644\0', 100)
+    h.write('0000000\0', 108)
+    h.write('0000000\0', 116)
+    h.write(String(size.toString(8)).padStart(11, '0') + '\0', 124)
+    h.write('00000000000\0', 136)
+    h.write('0', 156)
+    return h
+  }
+  function tarEntry(name, content) {
+    const data = Buffer.from(content)
+    const pad = Buffer.alloc((512 - (data.length % 512)) % 512)
+    return Buffer.concat([tarHeader(name, data.length), data, pad])
+  }
+  const tar = Buffer.concat([
+    tarEntry('package/README.txt', 'hello'),
+    tarEntry('package/ffmpeg.exe', 'FAKE-EXE-BYTES'),
+    Buffer.alloc(1024),
+  ])
+  const got = extractTarEntry(tar, 'package/ffmpeg.exe')
+  ok('extractTarEntry finds nested file', !!got && got.toString() === 'FAKE-EXE-BYTES', got && got.toString())
+  ok('extractTarEntry ignores other entries', extractTarEntry(tar, 'package/nope') === null)
+  ok('extractTarEntry handles ./ prefix', !!extractTarEntry(tar, './package/ffmpeg.exe'))
 }
 
 // ⑤ 中途取消（真实下载一支热门里最短的视频，立刻取消）：

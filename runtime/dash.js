@@ -600,6 +600,7 @@
     var onStatus = typeof opts.onStatus === 'function' ? opts.onStatus : noop
     var onFallback = typeof opts.onFallback === 'function' ? opts.onFallback : noop
     var onError = typeof opts.onError === 'function' ? opts.onError : noop
+    var onSeeked = typeof opts.onSeeked === 'function' ? opts.onSeeked : noop
     var horizon = Number(opts.horizon) || 180
     var evictBehind = Number(opts.evictBehind) || 60
 
@@ -1235,6 +1236,7 @@
             /* ignore */
           }
         }
+        notifySeeked(target)
         // 已缓冲范围内是瞬时的；若期间又来了新目标，继续处理
         if (queuedSeek !== null) global.setTimeout(runSeek, 0)
         return
@@ -1356,6 +1358,16 @@
         } catch (e2) {
           /* ignore */
         }
+      }
+      notifySeeked(t)
+    }
+
+    /** 通知上层「seek 已落到目标」——循环播放回开头后要靠它再触发 play。 */
+    function notifySeeked(t) {
+      try {
+        onSeeked(t)
+      } catch (e) {
+        /* ignore */
       }
     }
 
