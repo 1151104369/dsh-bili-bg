@@ -119,6 +119,8 @@ function makeDocument() {
 }
 
 const document = makeDocument()
+// 记录 POST /download 的 body，用来断言「按当前播放画质下载」请求字段。
+const downloadBodies = []
 
 function stubFetch(url, opts) {
   const u = String(url)
@@ -138,6 +140,11 @@ function stubFetch(url, opts) {
   } else if (u.includes('/download')) {
     // 先按 /download（比 /downloads 靠后判断）——注意 /downloads 在其上方。
     if (opts && opts.method === 'POST') {
+      try {
+        downloadBodies.push(JSON.parse(String(opts.body || '{}')))
+      } catch {
+        downloadBodies.push({})
+      }
       payload = {
         ok: true,
         id: 'dl_1_x',
@@ -332,6 +339,7 @@ api.download()
 await new Promise((r) => setTimeout(r, 80))
 const dlStatusEl = findByClass(document.body, 'dsbili-dl-status')
 const dlText = dlStatusEl ? String(dlStatusEl.textContent) : ''
+ok('download request carries quality mode=single', downloadBodies.length > 0 && downloadBodies[0].quality && downloadBodies[0].quality.mode === 'single', downloadBodies[0] && downloadBodies[0].quality)
 ok('download status shows received/total size', dlText.includes('1.0 MB') && dlText.includes('4.0 MB'), dlText)
 ok('download status shows percent when total known', dlText.includes('25%'), dlText)
 // 第二次轮询（约 1s 后）received 增长 → 状态行应出现速度（KB/s 或 MB/s，取决于轮询间隔）
@@ -497,6 +505,14 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
     else if (u.includes('/state')) {
       payload = opts && opts.method === 'POST' ? { ok: true } : { ok: true, state: {} }
     }
+    else if (u.includes('/download') && opts && opts.method === 'POST') {
+      try {
+        downloadBodies.push(JSON.parse(String(opts.body || '{}')))
+      } catch {
+        downloadBodies.push({})
+      }
+      payload = { ok: true, id: 'dl_hd', task: { id: 'dl_hd', status: 'downloading', received: 0, total: 0, height: 1080, quality: 'hd' } }
+    }
     // 高清请求：返回 DASH 分轨（照真实 B 站：每个清晰度有 avc1/hvc1/av01 三条 → 共 12 条）
     else if (u.includes('/play') && u.includes('hd=1')) {
       if (hdServerFallback) {
@@ -620,6 +636,21 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
   ok('quality buttons deduped to one per height (4)', btnsOfWrap.length === 4, btnsOfWrap.map((b) => b.textContent))
   ok('deduped quality buttons ordered high→low', btnsOfWrap.map((b) => b.textContent).join(',') === '1080P,720P,480P,360P', btnsOfWrap.map((b) => b.textContent))
   ok('default quality is 1080P (idx 0)', btnsOfWrap[0] && btnsOfWrap[0].getAttribute('data-on') === '1', btnsOfWrap[0] && btnsOfWrap[0].getAttribute('data-on'))
+  // 高清播放中下载 → 请求应带 mode=hd、当前高度与分轨索引（宿主据此下 1080p DASH）
+  downloadBodies.length = 0
+  hdApi.download()
+  await new Promise((r) => setTimeout(r, 60))
+  const hdDlBody = downloadBodies[0]
+  ok(
+    'download request carries current hd quality',
+    !!hdDlBody &&
+      hdDlBody.quality &&
+      hdDlBody.quality.mode === 'hd' &&
+      hdDlBody.quality.height === 1080 &&
+      hdDlBody.quality.videoIndex === 0 &&
+      hdDlBody.quality.qn === 80,
+    hdDlBody && hdDlBody.quality,
+  )
   // 关闭高清 → 立即回 720p 单文件，不白屏
   playerCalls.length = 0
   hdApi.hd()

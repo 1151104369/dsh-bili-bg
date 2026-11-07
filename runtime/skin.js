@@ -1965,17 +1965,31 @@
 
   function renderDownloadTask(t) {
     if (!t) return
+    var tag = t.height ? String(t.height) + 'P' : ''
     if (t.status === 'done') {
       var size = Number(t.total) > 0 ? Number(t.total) : Number(t.received) || 0
-      setDownloadLine('已保存: ' + fileNameOf(t.path) + (size > 0 ? '（' + formatBytes(size) + '）' : ''), 'ok')
-      if (dlStatusEl !== null) dlStatusEl.setAttribute('title', '完整路径：' + String(t.path || ''))
+      var multi = Array.isArray(t.paths) && t.paths.length > 1
+      if (multi) {
+        setDownloadLine(
+          '已保存 ' + (tag ? tag + ' ' : '') + '视频+音频两个文件: ' + fileNameOf(t.paths[0]) + ' / ' + fileNameOf(t.paths[1]) + (t.note ? '（' + t.note + '）' : ''),
+          'ok',
+        )
+        if (dlStatusEl !== null) dlStatusEl.setAttribute('title', '完整路径：\n' + t.paths.join('\n'))
+      } else {
+        setDownloadLine(
+          '已保存: ' + fileNameOf(t.path) + (tag ? '（' + tag + '）' : '') + (size > 0 ? '（' + formatBytes(size) + '）' : '') + (t.note ? ' · ' + t.note : ''),
+          'ok',
+        )
+        if (dlStatusEl !== null) dlStatusEl.setAttribute('title', '完整路径：' + String(t.path || ''))
+      }
     } else if (t.status === 'error') setDownloadLine('下载失败: ' + (t.error || '未知原因'), 'error')
-    else if (t.status === 'queued') setDownloadLine('排队中…', '')
+    else if (t.status === 'queued') setDownloadLine('排队中…' + (tag ? '（' + tag + '）' : ''), '')
+    else if (t.status === 'muxing') setDownloadLine('合轨中（ffmpeg -c copy）…' + (tag ? ' ' + tag : ''), '')
     else {
       // total 未知（还没拿到 content-length）时不显示假百分比，只显示已下载量与速度。
       var pct = downloadPct(t)
       var detail = downloadDetail(t)
-      setDownloadLine('下载中' + (pct === '-' ? '' : ' ' + pct + '%') + ' · ' + detail, '')
+      setDownloadLine('下载中' + (tag ? '（' + tag + '）' : '') + (pct === '-' ? '' : ' ' + pct + '%') + ' · ' + detail, '')
     }
   }
 
@@ -2039,12 +2053,26 @@
     }
     if (dlBtn !== null) dlBtn.disabled = true
     dlPrev = { at: 0, received: 0 } // 重置速度基准，避免沿用上一次下载的数字
+    // 按当前正在播放的画质下载：高清（MSE）时把分轨索引/高度带给宿主，
+    // 宿主会按该清晰度取 DASH 分轨（有 ffmpeg 则合轨成单 mp4，否则分别存视频/音频轨）。
+    var quality = { mode: st.hdEffective && dashPlayer !== null ? 'hd' : 'single' }
+    if (quality.mode === 'hd') {
+      quality.videoIndex = st.dashVideoIndex
+      quality.audioIndex = st.dashAudioIndex
+      quality.qn = st.hdQuality
+      var curQ = st.current && Array.isArray(st.hdQualities) ? st.hdQualities : []
+      var hit = null
+      for (var qi = 0; qi < curQ.length; qi += 1) {
+        if (Number(curQ[qi].index) === Number(st.dashVideoIndex)) hit = curQ[qi]
+      }
+      quality.height = hit ? Number(hit.height) || 0 : Number(st.current && st.current.height) || 0
+    }
     // 宿主会弹 Windows「另存为」（默认目录=系统下载目录），用户确认后才开始下载。
-    setDownloadLine('请在弹出的窗口选择保存位置…', '')
+    setDownloadLine('请在弹出的窗口选择保存位置…' + (quality.height ? '（' + quality.height + 'P）' : ''), '')
     fetchJson(ROUTES.download.create, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bvid: st.current.bvid }),
+      body: JSON.stringify({ bvid: st.current.bvid, quality: quality }),
     }).then(
       function (data) {
         if (!data || data.ok !== true) {

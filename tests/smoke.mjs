@@ -20,6 +20,7 @@ process.env.DSH_BILI_NO_DIALOG = '1'
 const { apply, VERSION } = await import('../index.js')
 const { qrPng, qrMatrix } = await import('../lib/qr.js')
 const { parsePoll, saveAuth } = await import('../lib/auth.js')
+const { pickDashTracks, findFfmpeg } = await import('../lib/download.js')
 
 const routes = new Map()
 const handlers = {}
@@ -200,6 +201,40 @@ ok('downloads list ok', dlList.ok === true && Array.isArray(dlList.list) && type
 // ④ 下载状态：未知 id → 404 + ok:false
 const dlUnknown = await (await fetch(base + '/dsh-bili/download?id=nope')).json()
 ok('download unknown id returns 404', dlUnknown.ok === false && typeof dlUnknown.error === 'string', dlUnknown)
+
+// ④' 按播放画质下载：pickDashTracks 选轨逻辑（离线纯函数）
+{
+  const dash = {
+    video: [
+      { height: 1080, codecs: 'hvc1.1.6', bandwidth: 2000, baseUrl: 'v1080hvc' },
+      { height: 1080, codecs: 'avc1.640033', bandwidth: 2800, baseUrl: 'v1080avc' },
+      { height: 720, codecs: 'avc1.64001f', bandwidth: 1200, baseUrl: 'v720avc' },
+      { height: 480, codecs: 'avc1.64001e', bandwidth: 600, baseUrl: 'v480avc' },
+    ],
+    audio: [
+      { bandwidth: 64000, codecs: 'mp4a.40.2', baseUrl: 'a64' },
+      { bandwidth: 128000, codecs: 'mp4a.40.2', baseUrl: 'a128' },
+    ],
+  }
+  const byIndex = pickDashTracks(dash, { videoIndex: 2, audioIndex: 0 })
+  ok('pickDashTracks honours videoIndex/audioIndex', byIndex && byIndex.video.height === 720 && byIndex.audio.baseUrl === 'a64', byIndex && { v: byIndex.video.height, a: byIndex.audio.baseUrl })
+  const byHeight = pickDashTracks(dash, { height: 1080 })
+  ok(
+    'pickDashTracks by height prefers avc1 (compat)',
+    byHeight && byHeight.video.height === 1080 && byHeight.video.baseUrl === 'v1080avc',
+    byHeight && byHeight.video.baseUrl,
+  )
+  const defaultPick = pickDashTracks(dash, {})
+  ok('pickDashTracks default picks highest ≤1080', defaultPick && defaultPick.video.height === 1080)
+  ok('pickDashTracks default audio is best bandwidth', defaultPick && defaultPick.audio.baseUrl === 'a128')
+  ok('pickDashTracks null on empty dash', pickDashTracks({ video: [], audio: [] }, {}) === null)
+  // findFfmpeg：DSH_BILI_FFMPEG 显式指定的路径应被采用
+  const fakeFf = path.join(TMP_HOME, 'ffmpeg-fake.exe')
+  fsx.writeFileSync(fakeFf, '')
+  process.env.DSH_BILI_FFMPEG = fakeFf
+  ok('findFfmpeg honours DSH_BILI_FFMPEG', findFfmpeg() === fakeFf, findFfmpeg())
+  delete process.env.DSH_BILI_FFMPEG
+}
 
 // ⑤ 中途取消（真实下载一支热门里最短的视频，立刻取消）：
 //    DELETE → status 变 cancelled；.part 半成品与正式文件都不应残留。

@@ -47,7 +47,7 @@ export const name = 'dsh-bili-bg'
 export const inject = []
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.3.5'
+export const VERSION = '0.4.0'
 
 const CONFIG_ROUTE = `${ROUTE_PREFIX}/config.json`
 const PLAY_ROUTE = `${ROUTE_PREFIX}/play`
@@ -169,7 +169,10 @@ function parseUrl(req) {
 export function apply(ctx) {
   const packageRoot = fileURLToPath(new URL('.', import.meta.url))
   const homeDir = resolveDshHome()
-  const downloader = createDownloader(homeDir)
+  const downloader = createDownloader(homeDir, {
+    // 按播放画质下载需要带登录 Cookie 解析 DASH 分轨。
+    getCookie: () => buildCookieHeader(homeDir),
+  })
   const stateFile = path.join(homeDir, STATE_FILE)
   const readRuntime = makeRuntimeReader(packageRoot)
 
@@ -457,8 +460,22 @@ export function apply(ctx) {
                     }
                   }
                   req.on('close', onReqClose)
+                  // 按「当前正在播放的画质」下载：客户端在 body.quality 里带
+                  // {mode:'hd'|'single', videoIndex, audioIndex, height, qn}。
+                  // hd → DASH 分轨（有 ffmpeg 合轨成单 mp4，没有就分别存视频/音频轨）。
+                  const quality =
+                    body.quality && typeof body.quality === 'object'
+                      ? {
+                          mode: typeof body.quality.mode === 'string' ? body.quality.mode : '',
+                          videoIndex: Number(body.quality.videoIndex),
+                          audioIndex: Number(body.quality.audioIndex),
+                          height: Number(body.quality.height),
+                          qn: Number(body.quality.qn),
+                        }
+                      : undefined
                   downloader
                     .startDownload(body.bvid.trim(), {
+                      quality,
                       decide: async (info) => {
                         if (explicitDir && explicitName) return path.join(explicitDir, explicitName)
                         if (noDialog) return ''
