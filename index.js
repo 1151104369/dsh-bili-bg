@@ -47,7 +47,7 @@ export const name = 'dsh-bili-bg'
 export const inject = []
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.3.4'
+export const VERSION = '0.3.5'
 
 const CONFIG_ROUTE = `${ROUTE_PREFIX}/config.json`
 const PLAY_ROUTE = `${ROUTE_PREFIX}/play`
@@ -356,7 +356,9 @@ export function apply(ctx) {
                 const headers = {
                   'Content-Type': upstream.headers['content-type'] || 'video/mp4',
                   'Accept-Ranges': upstream.headers['accept-ranges'] || 'bytes',
-                  'Cache-Control': 'no-store',
+                  // 允许短时缓存：720p 单文件的 moov 可能巨大（长视频动辄 5~10MB），
+                  // 切高清前预热、切回时可直接命中缓存，避免每次都重新下 moov 等好几秒。
+                  'Cache-Control': 'private, max-age=600',
                   // MSE 用 fetch 从页面直连 127.0.0.1 拉分轨（不同源），必须有 CORS 头。
                   'Access-Control-Allow-Origin': '*',
                 }

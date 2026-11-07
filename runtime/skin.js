@@ -203,6 +203,12 @@
   var hdStateEl = null
   var qualityWrap = null
   var qualityButtons = []
+  // 高清播放时后台预热 720p 单文件（隐藏 <video>）：长视频 moov 可达 9MB，
+  // 不预热的话「切回 720p」要等 moov 下完（数秒）。预热后切回可命中缓存，几乎是瞬间。
+  var warmEl = null
+  var warmTimer = null
+  // 单文件加载时，先显示「缓冲中…」，等真正 loadeddata 再显示「正在播放」。
+  var playingPending = false
 
   // ────────────────────────────── 界面表面半透明 ──────────────────────────────
 
@@ -344,6 +350,14 @@
       video.setAttribute('data-shown', '1')
       switchingSrc = false
       applyPendingSeek()
+      if (playingPending) {
+        playingPending = false
+        setStatus('正在播放', 'ok')
+      }
+      // 单文件已经真正出画面：预热元素可以回收了（释放解码器/内存）。
+      if (warmEl !== null) {
+        global.setTimeout(stopWarmSingleFile, 1200)
+      }
     })
     video.addEventListener('canplay', applyPendingSeek)
     video.addEventListener('error', function () {
@@ -547,6 +561,84 @@
   // 切换高清/清晰度时，video.src 会被改动；这期间的 error 事件是过渡态噪声，忽略掉。
   var switchingSrc = false
 
+  /** 取当前视频的单文件播放地址（优先直连 mediaBase）。 */
+  function singleFileUrl() {
+    if (st.srcAbs) return st.srcAbs
+    return st.srcRel || ''
+  }
+
+  /**
+   * 高清播放时后台预热 720p 单文件：用隐藏 <video> preload=auto 拉一次（主要是 moov）。
+   * 配合 /media 的短时缓存，用户「关高清」切回 720p 时可直接命中缓存，不用再等几秒。
+   */
+  function warmSingleFile() {
+    var url = singleFileUrl()
+    if (!url) return
+    if (warmEl === null) {
+      if (typeof doc.createElement !== 'function') return
+      warmEl = doc.createElement('video')
+      warmEl.muted = true
+      warmEl.preload = 'auto'
+      warmEl.setAttribute('playsinline', '')
+      warmEl.setAttribute('aria-hidden', 'true')
+      try {
+        warmEl.style.cssText =
+          'position:absolute;left:0;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none'
+      } catch (e) {
+        /* ignore */
+      }
+      try {
+        if (layer !== null) layer.appendChild(warmEl)
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    try {
+      if (warmEl.getAttribute('data-src') !== url) {
+        warmEl.setAttribute('data-src', url)
+        warmEl.src = url
+        warmEl.load && warmEl.load()
+      }
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  /** 停掉/回收预热元素（新视频、切回完成、关掉高清后）。 */
+  function stopWarmSingleFile() {
+    if (warmTimer !== null) {
+      try {
+        global.clearTimeout(warmTimer)
+      } catch (e) {
+        /* ignore */
+      }
+      warmTimer = null
+    }
+    if (warmEl === null) return
+    try {
+      warmEl.removeAttribute('data-src')
+      warmEl.removeAttribute('src')
+      warmEl.load && warmEl.load()
+    } catch (e) {
+      /* ignore */
+    }
+    try {
+      if (warmEl.parentNode) warmEl.parentNode.removeChild(warmEl)
+    } catch (e) {
+      /* ignore */
+    }
+    warmEl = null
+  }
+
+  /** 高清稳定播放 2.5s 后再预热（避免和 HD 首屏抢带宽）。 */
+  function scheduleWarmSingleFile() {
+    if (warmTimer !== null) return
+    warmTimer = global.setTimeout(function () {
+      warmTimer = null
+      if (st.hdEffective && st.hd === true) warmSingleFile()
+    }, 2500)
+  }
+
   /** 销毁当前 MSE 播放器（切回单文件 / 换轨 / 清屏时用）。 */
   function destroyDash() {
     if (dashPlayer !== null) {
@@ -695,6 +787,13 @@
       st.hdDiag = { status: phase, reason: '', phase: dashPhases.join(''), at: Date.now() }
     }
     recordPhase('create')
+    st.hdDiag = {
+      status: 'create',
+      reason: '',
+      phase: 'create@0',
+      env: { origin: global.location ? String(global.location.origin || '') : '', base: absBase },
+      at: Date.now(),
+    }
     // MSE 的 blob 源不参与原生 loop：关掉 loop，让 ended 事件由 onEnded 统一处理
     //（非轮播时手动 seek(0) 续播，轮播时切下一支）。
     try {
@@ -772,9 +871,6 @@
           switchingSrc = false
           try {
             video.setAttribute('data-mse', '1')
-            // MSE 下 displayed 帧出现后浏览器才派 loadeddata，但不同内核时机不同：
-            // 这里直接显示，避免「有声音/在解码但 CSS opacity 还是 0」的隐形画面。
-            video.setAttribute('data-shown', '1')
             video.playbackRate = st.rate
           } catch (e) {
             /* ignore */
@@ -784,11 +880,16 @@
             st.pendingSeek = null
             dashPlayer.seek(target)
           }
-          setStatus('高清播放中（' + (usedHeight ? usedHeight + 'P' : 'DASH') + '）', 'ok')
-          // 关键：这里才真正开播。早先在 load() 之后立刻 play()，此时 MediaSource 还没
-          // 就绪（video.src 可能仍是旧的/已 revoke 的 blob），play 被拒会被误当成
-          // 「自动播放被拦」→ 自动静音。现在改为就绪后再播。
-          if (dashWantPlay && video.paused) tryPlay(!st.muted)
+          // 「ready」只表示 init 段已就绪，媒体分片还没到——此时露画面只会是黑屏，
+          // 状态写着「高清播放中」却没画面。改成等第一帧真正可显示（readyState>=2 /
+          // loadeddata）再显示画面、报「高清播放中」并开播。
+          var thisPlayer = dashPlayer
+          waitDashFirstFrame(
+            function () {
+              return dashPlayer === thisPlayer
+            },
+            usedHeight,
+          )
           syncButtons()
           syncQuality()
           persist()
@@ -817,6 +918,76 @@
   /** onStatus 里判断是否已切走（dashPlayer 已被换成别的实例/销毁）。 */
   function destroyedFlag() {
     return dashPlayer === null
+  }
+
+  /**
+   * 等 MSE 真正有可显示的第一帧，再显示画面 / 报「高清播放中」/ 开播。
+   * 早先 init 一就绪就显示，用户会先看到「高清播放中（1080P）」但画面黑几秒。
+   * @param {() => boolean} stillCurrent 判断这次播放器是否仍是当前实例
+   * @param {number} height 目标高度
+   */
+  function waitDashFirstFrame(stillCurrent, height) {
+    var revealed = false
+    var poll = null
+    var tries = 0
+    function cleanup() {
+      if (poll !== null) {
+        try {
+          global.clearTimeout(poll)
+        } catch (e) {
+          /* ignore */
+        }
+        poll = null
+      }
+      try {
+        if (video) {
+          video.removeEventListener('loadeddata', reveal)
+          video.removeEventListener('canplay', reveal)
+        }
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    function reveal() {
+      if (revealed) return
+      if (stillCurrent && !stillCurrent()) {
+        cleanup()
+        return
+      }
+      revealed = true
+      cleanup()
+      try {
+        if (video) video.setAttribute('data-shown', '1')
+      } catch (e) {
+        /* ignore */
+      }
+      setStatus('高清播放中（' + (height ? height + 'P' : 'DASH') + '）', 'ok')
+      if (dashWantPlay && video && video.paused) tryPlay(!st.muted)
+      syncButtons()
+      syncQuality()
+      persist()
+      scheduleWarmSingleFile()
+    }
+    function tick() {
+      poll = null
+      tries += 1
+      if (stillCurrent && !stillCurrent()) {
+        cleanup()
+        return
+      }
+      if (video && video.readyState >= 2) reveal()
+      else if (tries > 70) reveal() // 7s 兜底：别永远不出画面
+      else poll = global.setTimeout(tick, 100)
+    }
+    try {
+      if (video) {
+        video.addEventListener('loadeddata', reveal)
+        video.addEventListener('canplay', reveal)
+      }
+    } catch (e) {
+      /* ignore */
+    }
+    poll = global.setTimeout(tick, 100)
   }
 
   /** MSE 失败/不可用：销毁并立刻回退 720p 单文件，绝不留白屏。 */
@@ -878,7 +1049,9 @@
       destroyDash()
       if (st.current && st.current.bvid) {
         switchingSrc = true
-        loadAndPlay(st.current.bvid)
+        // 保持原来的播放/暂停状态，别因为切画质就自动开播或停播。
+        var wasPlaying = st.playing === true
+        loadAndPlay(st.current.bvid, { autoPlay: wasPlaying })
       }
     } else if (st.current && st.current.bvid) {
       if (pos !== null) st.pendingSeek = pos
@@ -1120,9 +1293,13 @@
             }
             switchingSrc = false
             if (autoPlay) {
+              // 先不报「正在播放」：单文件要等 moov/首个分片到位才有画面，
+              // 等 loadeddata（见 listener 里 playingPending 分支）再改状态。
+              playingPending = true
               tryPlay(!st.muted)
             } else {
               // 恢复到「上次暂停」的状态：加载到记录位置但不自动播放。
+              playingPending = false
               st.playing = false
               try {
                 video.pause()
@@ -1137,14 +1314,15 @@
           syncQuality()
           if (fallbackNote) {
             setStatus('高清不可用：' + fallbackNote + '，已用 720p 单文件播放', 'error')
+            playingPending = false
+          } else if (autoPlay) {
+            setStatus('加载 720p…', '')
           } else {
             setStatus(
-              autoPlay
-                ? '正在播放'
-                : st.focusOff
-                  ? '专注模式保持中（点「恢复显示」回来看）'
-                  : '已恢复上次暂停的视频（点播放继续）',
-              autoPlay ? 'ok' : '',
+              st.focusOff
+                ? '专注模式保持中（点「恢复显示」回来看）'
+                : '已恢复上次暂停的视频（点播放继续）',
+              '',
             )
           }
           persist()
@@ -2678,6 +2856,7 @@
       },
       teardown: function () {
         stopDownloadPoll()
+        stopWarmSingleFile()
         destroyDash()
         hideLayer()
         if (layer && layer.parentNode) layer.parentNode.removeChild(layer)
