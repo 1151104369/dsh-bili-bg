@@ -89,6 +89,14 @@ assert.ok(
     !rows[0].text.includes('position: sticky'),
   '样式应为固定标题栏 + 内部滚动 body（标题栏不随内容滚动）',
 )
+// 面板固定高度（各标签页长度一致）+ 列表不再有内层滚动条（只保留 body 一个滚动条）
+assert.ok(rows[0].text.includes('height: min(78vh'), '面板应为固定高度（切换标签页长度一致）')
+assert.ok(
+  !/\.dsbili-list\s*\{[^}]*overflow-y:\s*auto/.test(rows[0].text),
+  '列表不应再有内层滚动条（避免双重滚动）',
+)
+assert.ok(rows[0].text.includes('.dsbili-account-state'), '样式应包含未登录状态文案')
+assert.ok(rows[0].text.includes('.dsbili-account-row'), '账号行应为左状态/右按钮布局')
 assert.ok(rows[2].text.includes('dsbili-launch'), '皮肤脚本应创建入口胶囊')
 assert.ok(rows[2].text.includes('Ctrl+Shift+B'), '皮肤脚本应带键盘入口')
 // 面板标签页 + 标题栏拖动：脚本/CSS 都要有对应实现

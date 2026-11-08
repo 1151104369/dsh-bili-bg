@@ -1032,9 +1032,9 @@
     destroyDash()
     st.hdEffective = false
     st.hdFallback = reason || '已回退 720p'
-    // 关键：失败后把高清开关**关掉**，否则 UI 会同时显示「高清已开」和「已回退 720p」，
-    // 自相矛盾。现在状态统一为：高清(关) + 当前 720p（附回退原因）。
-    st.hd = false
+    // 注意：**不再把 st.hd 置 false**。st.hd 是用户偏好（持久化），
+    // 这里只是本视频/本次播放失败。关掉偏好会导致「重启后高清自动丢失」，
+    // 所以保留偏好，下个视频/下次启动仍会尝试高清；UI 用「本视频回退 720p」说明当前状态。
     setStatus('高清不可用：' + st.hdFallback + '，已自动切回 720p 单文件（可再点「高清」重试）', 'error')
     syncButtons()
     syncQuality()
@@ -1130,8 +1130,10 @@
     }
     if (hdStateEl !== null) {
       var label = ''
-      // 注意：回退时 st.hd 已被置为 false，所以这里不会再出现「高清已开 + 已回退」的矛盾。
-      if (!st.hd) label = st.hdFallback ? '已回退 720p' : '720p 单文件'
+      // st.hd 是「用户偏好」，hdFallback 只描述当前视频。偏好开但本视频回退时，
+      // 用「本视频回退 720p」说明范围，避免让人以为开关被关掉了。
+      if (!st.hd) label = '720p 单文件'
+      else if (st.hdFallback && !st.hdEffective) label = '本视频回退 720p'
       else if (st.hdEffective && st.current) label = (formatLabel(st.current.height) || st.current.quality || '') + ' 高清'
       else label = '高清…'
       hdStateEl.textContent = label
@@ -1297,9 +1299,8 @@
             fallbackNote = String(data.fallback)
             st.hdFallback = fallbackNote
             st.hdEffective = false
-            // 与 MSE 失败时的行为保持一致：高清实际没生效，就把开关关掉，
-            // 避免「高清已开 + 已回退」这种自相矛盾的显示。
-            st.hd = false
+            // 保留 st.hd（用户偏好）：这个视频拿不到分轨不代表以后都不用高清，
+            // 否则「重启后高清变回非高清」。当前视频按 720p 单文件播并提示即可。
             destroyDash()
           }
           var src = data.src
@@ -1699,11 +1700,12 @@
         row.appendChild(av)
       }
       row.appendChild(el('span', 'dsbili-account-name', st.account.uname))
-      var logoutBtn = el('button', 'dsbili-btn dsbili-account-logout', '退出')
+      var logoutBtn = el('button', 'dsbili-btn dsbili-account-logout', '退出登录')
       logoutBtn.addEventListener('click', doLogout)
       row.appendChild(logoutBtn)
     } else {
-      var loginBtn = el('button', 'dsbili-btn dsbili-account-login', '二维码登录')
+      row.appendChild(el('span', 'dsbili-account-state', '未登录'))
+      var loginBtn = el('button', 'dsbili-btn dsbili-account-login', '扫码登录')
       loginBtn.addEventListener('click', startQrLogin)
       row.appendChild(loginBtn)
       if (st.authBusy) row.appendChild(el('div', 'dsbili-account-status', '检测登录态…'))
@@ -1954,6 +1956,8 @@
         st.count = num(s.count, st.count, 1, 30)
         st.carousel = s.carousel === true
         if (typeof s.loop === 'boolean') st.loop = s.loop
+        // 互斥：两个都开时以「列表连播」为准（旧状态兼容）
+        if (st.carousel && st.loop) st.loop = false
         st.muted = s.muted === true
         st.volume = num(s.volume, st.volume, 0, 1)
         st.veil = num(s.veil, st.veil, 0, 0.92)
@@ -2439,11 +2443,15 @@
       var rb = rateButtons[rbi]
       rb.setAttribute('data-on', Number(rb.getAttribute('data-rate')) === st.rate ? '1' : '0')
     }
-    if (carouselBtn !== null) carouselBtn.setAttribute('aria-pressed', st.carousel ? 'true' : 'false')
+    if (carouselBtn !== null) {
+      carouselBtn.setAttribute('aria-pressed', st.carousel ? 'true' : 'false')
+      carouselBtn.setAttribute('data-on', st.carousel ? '1' : '0')
+    }
     if (loopBtn !== null) {
       loopBtn.setAttribute('aria-pressed', st.loop ? 'true' : 'false')
       loopBtn.setAttribute('data-on', st.loop ? '1' : '0')
-      loopBtn.textContent = st.loop ? '🔂 循环' : '🔁 循环关'
+      // 文案固定（开关状态用 data-on 高亮），避免「循环关」这种让人困惑的字样
+      loopBtn.textContent = '🔂 单曲循环'
     }
     if (focusBtn !== null) {
       focusBtn.textContent = st.focusOff ? '☀ 恢复显示' : '🌙 专注隐藏'
@@ -2565,11 +2573,28 @@
     syncButtons()
   }
 
-  /** 单曲循环开关（高清/单文件都支持）。 */
+  /** 单曲循环开关（高清/单文件都支持）。与「列表连播」互斥。 */
   function toggleLoop() {
     st.loop = !st.loop
+    if (st.loop) st.carousel = false // 互斥：开单曲循环就关列表连播
     if (video !== null) video.loop = !st.carousel && st.loop === true
     if (!st.loop) seekPlayPending = false
+    setStatus(st.loop ? '单曲循环：开启（放完从头再播）' : '单曲循环：关闭', '')
+    syncButtons()
+    persist()
+  }
+
+  /** 列表连播开关：放完当前视频自动播列表下一支。与「单曲循环」互斥。 */
+  function toggleCarousel() {
+    st.carousel = !st.carousel
+    if (st.carousel) st.loop = false // 互斥：开列表连播就关单曲循环
+    if (video !== null) video.loop = !st.carousel && st.loop === true
+    if (st.carousel && !st.queue.length) {
+      loadQueue().then(function () {
+        if (st.queue.length && st.current === null) playQueueIndex(0)
+      })
+    }
+    setStatus(st.carousel ? '列表连播：开启（放完自动播列表下一支）' : '列表连播：关闭', '')
     syncButtons()
     persist()
   }
@@ -3054,28 +3079,20 @@
 
     // 轮播/来源
     var row3 = el('div', 'dsbili-btnrow')
-    carouselBtn = el('button', 'dsbili-btn', '🔁 轮播')
-    carouselBtn.addEventListener('click', function () {
-      st.carousel = !st.carousel
-      if (video !== null) video.loop = !st.carousel && st.loop === true
-      if (st.carousel && !st.queue.length) {
-        loadQueue().then(function () {
-          if (st.queue.length && st.current === null) playQueueIndex(0)
-        })
-      }
-      syncButtons()
-      persist()
-    })
-    var refreshBtn = el('button', 'dsbili-btn', '🔄 换队列')
+    carouselBtn = el('button', 'dsbili-btn', '🔁 列表连播')
+    carouselBtn.setAttribute('title', '放完当前视频自动播列表下一支（与「单曲循环」互斥）')
+    carouselBtn.addEventListener('click', toggleCarousel)
+    var refreshBtn = el('button', 'dsbili-btn', '🔄 刷新列表')
+    refreshBtn.setAttribute('title', '重新拉取当前来源（热门/排行榜/首页推荐）的列表')
     refreshBtn.addEventListener('click', function () {
       st.index = -1
       loadQueue()
       persist()
     })
-    // 单曲循环：高清与单文件模式都支持；轮播开启时轮播优先（放完切下一支）。
-    loopBtn = el('button', 'dsbili-btn', '🔂 循环')
+    // 单曲循环：高清与单文件模式都支持（与「列表连播」互斥）。
+    loopBtn = el('button', 'dsbili-btn', '🔂 单曲循环')
     loopBtn.id = 'dsbili-loop-btn'
-    loopBtn.setAttribute('title', '单曲循环：放完回到开头继续（高清/720p 都生效；轮播开启时优先轮播）')
+    loopBtn.setAttribute('title', '当前视频放完从头再播（与「列表连播」互斥）')
     loopBtn.addEventListener('click', toggleLoop)
     row3.appendChild(carouselBtn)
     row3.appendChild(loopBtn)
@@ -3303,6 +3320,7 @@
       clear: toggleClear,
       focus: toggleFocus,
       loop: toggleLoop,
+      carousel: toggleCarousel,
       // 供自动化/排障：统一走当前模式的 seek（高清 → MSE 播放器；否则 media element）
       seek: function (t) {
         var target = Number(t)

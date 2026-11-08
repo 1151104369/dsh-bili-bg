@@ -230,6 +230,8 @@ body:not([data-ds-dark-theme]) #dsbili-launch {
   width: 300px;
   /* 窄窗口下也别超出视口（否则右侧标题栏/退出按钮会被裁掉） */
   max-width: calc(100vw - 24px);
+  /* 固定高度：播放/列表等标签页切换时面板长度保持一致，不会忽长忽短 */
+  height: min(78vh, 660px);
   max-height: min(82vh, 700px);
   /* 面板本体**不滚动**：标题栏是固定的一段，滚动发生在 .dsbili-body 内部。 */
   overflow: hidden;
@@ -669,8 +671,7 @@ body:not([data-ds-dark-theme]) .dsbili-range {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 150px;
-  overflow-y: auto;
+  /* 不再单独滚动：整页只有 .dsbili-body 一个滚动条，避免「列表里套一个滚动条」。 */
 }
 
 .dsbili-item {
@@ -912,5 +913,12 @@ body:not([data-ds-dark-theme]) .dsbili-now-top:hover {
 .dsbili-now-top .dsbili-now-meta {
   margin-top: 3px;
   font-size: 11px;
+  opacity: 0.65;
+}
+
+/* 未登录状态文案（左侧），右侧是扫码登录按钮 */
+.dsbili-account-state {
+  flex: 1 1 auto;
+  font-size: 11.5px;
   opacity: 0.65;
 }

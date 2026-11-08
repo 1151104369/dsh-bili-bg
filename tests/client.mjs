@@ -427,6 +427,20 @@ api.loop()
 ok('loop off after toggle', api.state.loop === false && loopBtnEl.getAttribute('data-on') === '0', api.state.loop)
 api.loop()
 ok('loop on again', api.state.loop === true && loopBtnEl.getAttribute('data-on') === '1', api.state.loop)
+// 列表连播 / 单曲循环互斥：开一个自动关另一个
+api.carousel()
+ok('carousel on turns loop off (mutually exclusive)', api.state.carousel === true && api.state.loop === false, {
+  carousel: api.state.carousel,
+  loop: api.state.loop,
+})
+api.loop()
+ok('loop on turns carousel off (mutually exclusive)', api.state.loop === true && api.state.carousel === false, {
+  loop: api.state.loop,
+  carousel: api.state.carousel,
+})
+const carouselBtnEl = findByText(document.body, '🔁 列表连播')
+ok('carousel button labelled 列表连播', !!carouselBtnEl)
+ok('refresh button labelled 刷新列表', !!findByText(document.body, '🔄 刷新列表'))
 
 // 下载状态行要显示「大小 / 总大小」（以及后续轮询的速度）。
 api.download()
@@ -455,6 +469,10 @@ ok('default source popular when logged out', api.state.source === 'popular', api
 const account = findById(document.body, 'dsbili-account')
 ok('account area built', !!account)
 ok('account shows QR login when logged out', !!findByClass(document.body, 'dsbili-account-login'))
+// 未登录：左「未登录」+ 右「扫码登录」
+const accState = findByClass(document.body, 'dsbili-account-state')
+ok('logged-out shows 未登录 on the left', !!accState && String(accState.textContent) === '未登录', accState && accState.textContent)
+ok('login button labelled 扫码登录', !!findByText(document.body, '扫码登录'))
 ok('feed source button present', !!findByText(document.body, '首页推荐'))
 
 // 来源按钮顺序：首页推荐 → 热门 → 排行榜
@@ -483,6 +501,8 @@ const accAvatar = findByClass(document.body, 'dsbili-account-avatar')
 ok('account shows avatar', !!accAvatar && accAvatar.src === 'http://x/face.png')
 ok('account hides login button when logged in', !findByClass(document.body, 'dsbili-account-login'))
 ok('account shows logout button', !!findByClass(document.body, 'dsbili-account-logout'))
+ok('logout button labelled 退出登录', !!findByText(document.body, '退出登录'))
+ok('logged-in no 未登录 text', !findByClass(document.body, 'dsbili-account-state'))
 
 // 退出 → 回到未登录视图
 if (api.auth && api.auth.logout) api.auth.logout()
@@ -772,20 +792,20 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
   )
   ok('hd without MSE reports effective=false', hdApi.state.hdEffective === false)
   // 回退后必须状态自洽：高清开关变回「关」，不能同时显示「高清已开」+「已回退 720p」。
-  ok('fallback turns hd toggle off (no contradictory UI)', hdApi.state.hd === false, hdApi.state.hd)
+  // 关键：回退只影响「当前视频」，**用户的高清偏好不能丢**（否则重启后高清自动变回非高清）
+  ok('fallback keeps hd preference (persist across restart)', hdApi.state.hd === true, hdApi.state.hd)
   const hdStateEl = findByClass(hdDoc.body, 'dsbili-hd-state')
-  ok('fallback label shows 已回退 720p', !!hdStateEl && String(hdStateEl.textContent) === '已回退 720p', hdStateEl && hdStateEl.textContent)
+  ok('fallback label scoped to current video', !!hdStateEl && String(hdStateEl.textContent) === '本视频回退 720p', hdStateEl && hdStateEl.textContent)
   const hdBtnAfter = findById(hdDoc.body, 'dsbili-hd-btn')
-  ok('fallback toggle button is not "已开"', !!hdBtnAfter && hdBtnAfter.textContent.indexOf('已开') === -1, hdBtnAfter && hdBtnAfter.textContent)
-  // 服务端明确回退（hd:false + fallback）时，开关也要关掉，状态保持一致
+  ok('fallback keeps hd toggle on (preference)', !!hdBtnAfter && hdBtnAfter.textContent.indexOf('已开') !== -1, hdBtnAfter && hdBtnAfter.textContent)
+  // 服务端明确回退（hd:false + fallback）时同样只影响当前视频，偏好保留。
+  // 此时 st.hd 偏好仍为 true（上一步回退没有关掉它），直接重新播放即可走到服务端回退分支。
   hdServerFallback = true
   hdApi.play('BV1HDTEST')
-  await new Promise((r) => setTimeout(r, 80))
-  hdApi.hd()
   await new Promise((r) => setTimeout(r, 120))
-  ok('server-side fallback turns hd off too', hdApi.state.hd === false, hdApi.state.hd)
+  ok('server-side fallback keeps hd preference', hdApi.state.hd === true, hdApi.state.hd)
   const hdStateEl2 = findByClass(hdDoc.body, 'dsbili-hd-state')
-  ok('server-side fallback label is 已回退 720p', !!hdStateEl2 && String(hdStateEl2.textContent) === '已回退 720p', hdStateEl2 && hdStateEl2.textContent)
+  ok('server-side fallback label scoped to current video', !!hdStateEl2 && String(hdStateEl2.textContent) === '本视频回退 720p', hdStateEl2 && hdStateEl2.textContent)
   ok('server-side fallback keeps a playable single-file src', (() => {
     const v = findById(hdDoc.body, 'dsbili-video')
     const s = v ? String(v.src) : ''
