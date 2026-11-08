@@ -82,12 +82,11 @@ html[data-dsbili-clear="on"] [class*="centerCol"] {
   background: rgba(0, 0, 0, var(--dsbili-veil, 0.32));
 }
 
-/* 弹幕浮层：盖在 <video> 之上、蒙版之下，铺满背景层，不拦鼠标。 */
+/* 弹幕浮层：盖在 <video> 之上、蒙版之下；left/top/width/height 由 JS 贴合视频显示区。 */
 #dsbili-danmaku {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+  left: 0;
+  top: 0;
   pointer-events: none;
 }
 

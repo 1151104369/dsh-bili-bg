@@ -169,6 +169,13 @@
     wallpaper: false,
     // 弹幕开关：在视频画面下方渲染一个滚动浮层（不影响播放，任何失败自动隐藏）。
     dm: false,
+    // 弹幕外观（都持久化）：字号百分比/不透明度/速度倍率/显示区域（占画面高度比例）。
+    dmSize: 100,
+    dmOpacity: 80,
+    dmSpeed: 100,
+    dmArea: 100,
+    // 静音墙纸开启前的原始状态（关闭时还原，避免单向）。
+    wallpaperSaved: null,
   }
 
   // DOM
@@ -205,6 +212,13 @@
   var focusBtn = null
   var wallpaperBtn = null
   var dmBtn = null
+  var dmSizeRange = null
+  var dmSizeVal = null
+  var dmOpacityRange = null
+  var dmOpacityVal = null
+  var dmAreaRange = null
+  var dmAreaVal = null
+  var dmSpeedBtns = []
   var surfaceRange = null
   var surfaceVal = null
   var veilRange = null
@@ -330,6 +344,8 @@
   /** 把"完整/铺满"写进视频元素的 data-fit。 */
   function applyFit() {
     if (video !== null) video.setAttribute('data-fit', st.fit === 'cover' ? 'cover' : 'width')
+    // 显示方式改变会改变视频显示区，弹幕画布要跟着重新贴合。
+    if (st.dm) global.setTimeout(dmResize, 60)
   }
 
   /**
@@ -403,6 +419,8 @@
     video.addEventListener('loadeddata', function () {
       video.setAttribute('data-shown', '1')
       switchingSrc = false
+      // 视频真正出画面后才知道实际显示高度，重贴弹幕画布（字号按画面比例）。
+      if (st.dm) dmResize()
       applyPendingSeek()
       if (playingPending) {
         playingPending = false
@@ -1934,6 +1952,10 @@
       focusOff: st.focusOff,
       wallpaper: st.wallpaper === true,
       dm: st.dm === true,
+      dmSize: st.dmSize,
+      dmOpacity: st.dmOpacity,
+      dmSpeed: st.dmSpeed,
+      dmArea: st.dmArea,
       pid: Math.floor(Number(st.pid) || 1),
       surface: st.surface,
       veil: st.veil,
@@ -2031,6 +2053,10 @@
         st.pid = Math.max(1, Math.floor(Number(s.pid) || 1))
         st.wallpaper = s.wallpaper === true
         st.dm = s.dm === true
+        st.dmSize = num(s.dmSize, 100, 50, 200)
+        st.dmOpacity = num(s.dmOpacity, 80, 10, 100)
+        st.dmSpeed = num(s.dmSpeed, 100, 40, 250)
+        st.dmArea = num(s.dmArea, 100, 25, 100)
         if (s.launcher) applyLauncherPos(s.launcher)
         if (s.panelPos) applyPanelPos(s.panelPos)
         if (typeof s.tab === 'string' && panelSetTab) panelSetTab(s.tab)
@@ -2524,6 +2550,7 @@
       dmBtn.textContent = st.dm ? '💬 弹幕:开' : '💬 弹幕'
       dmBtn.setAttribute('data-on', st.dm ? '1' : '0')
     }
+    syncDmSettings()
     if (prevBtn !== null) prevBtn.disabled = st.busy
     if (nextBtn !== null) nextBtn.disabled = st.busy
     if (srcPopular !== null) srcPopular.setAttribute('aria-pressed', st.source === 'popular' ? 'true' : 'false')
@@ -2668,22 +2695,22 @@
 
   /** 纯氛围静音墙纸模式：静音 + 悬浮胶囊收起，做无感后台播放。 */
   function applyWallpaper() {
+    // 弹幕画布独立于墙纸；这里只管音量与胶囊。
     if (video !== null) {
       try {
-        // 墙纸模式下锁定静音；退出后回到用户自己的 mute 偏好。
+        // 墙纸模式下锁定静音；非墙纸时按用户 mute 偏好。
         video.muted = st.wallpaper ? true : st.muted === true
       } catch (e) {
         /* ignore */
       }
     }
-    if (st.wallpaper && launch !== null && st.expanded) {
-      setExpanded(false)
-    }
   }
   function toggleWallpaper() {
-    st.wallpaper = !st.wallpaper
-    if (st.wallpaper) {
-      st.muted = true // 默认静音，免得突然出声
+    if (!st.wallpaper) {
+      // 开启：先记住原始静音/展开状态，退出时还原（不只是单向设置）。
+      st.wallpaperSaved = { muted: st.muted === true, expanded: st.expanded === true }
+      st.wallpaper = true
+      st.muted = true // 墙纸默认静音，免得突然出声
       if (video !== null) {
         try {
           video.muted = true
@@ -2691,10 +2718,24 @@
           /* ignore */
         }
       }
+      if (launch !== null) setExpanded(false) // 收起悬浮胶囊，减少打扰
       setStatus('纯氛围静音墙纸：已开启（静音后台播放）', 'ok')
     } else {
-      applyWallpaper()
-      setStatus('已退出纯氛围静音墙纸模式', '')
+      // 关闭：还原开启前的静音与胶囊展开状态。
+      var saved = st.wallpaperSaved
+      st.wallpaper = false
+      st.muted = saved && typeof saved.muted === 'boolean' ? saved.muted : st.muted
+      if (video !== null) {
+        try {
+          video.muted = st.muted === true
+        } catch (e) {
+          /* ignore */
+        }
+      }
+      var restoreExpanded = saved && typeof saved.expanded === 'boolean' ? saved.expanded : st.expanded
+      if (launch !== null) setExpanded(restoreExpanded)
+      st.wallpaperSaved = null
+      setStatus('已退出纯氛围静音墙纸模式（已还原原静音/胶囊状态）', '')
     }
     applyWallpaper()
     syncButtons()
@@ -2745,15 +2786,68 @@
   function dmResize() {
     if (dmCanvas === null) return
     try {
-      var w = layer ? layer.clientWidth : 0
-      var h = layer ? layer.clientHeight : 0
-      if (!w) w = global.innerWidth || 0
-      if (!h) h = global.innerHeight || 0
+      // 弹幕画布贴合**视频实际显示区域**（完整=顶部一条，铺满=全屏），字号据此按比例算。
+      var rect = null
+      if (video !== null && typeof video.getBoundingClientRect === 'function') {
+        var vr = video.getBoundingClientRect()
+        var lr =
+          layer !== null && typeof layer.getBoundingClientRect === 'function'
+            ? layer.getBoundingClientRect()
+            : { left: 0, top: 0 }
+        if (vr && vr.width > 0 && vr.height > 0) {
+          rect = { left: vr.left - (lr.left || 0), top: vr.top - (lr.top || 0), width: vr.width, height: vr.height }
+        }
+      }
+      if (!rect) {
+        var lw = layer ? layer.clientWidth : 0
+        var lh = layer ? layer.clientHeight : 0
+        rect = { left: 0, top: 0, width: lw || global.innerWidth || 0, height: lh || global.innerHeight || 0 }
+      }
+      if (dmCanvas.style) {
+        dmCanvas.style.left = Math.round(rect.left) + 'px'
+        dmCanvas.style.top = Math.round(rect.top) + 'px'
+        dmCanvas.style.width = Math.round(rect.width) + 'px'
+        dmCanvas.style.height = Math.round(rect.height) + 'px'
+        dmCanvas.style.opacity = String(num(st.dmOpacity, 80, 10, 100) / 100)
+      }
+      var w = Math.max(1, Math.round(rect.width))
+      var h = Math.max(1, Math.round(rect.height))
       if (dmCanvas.width !== w) dmCanvas.width = w
       if (dmCanvas.height !== h) dmCanvas.height = h
     } catch (e) {
       /* ignore */
     }
+  }
+
+  /** 基础字号：按视频显示高度比例（约 5%），并夹在 14~32px，再乘用户字号百分比。 */
+  function dmFontPx(h) {
+    var base = Math.max(14, Math.min(32, Math.round((Number(h) || 0) * 0.05)))
+    return Math.max(10, Math.min(72, Math.round(base * (num(st.dmSize, 100, 50, 200) / 100))))
+  }
+
+  function applyDmOpacity() {
+    if (dmCanvas !== null && dmCanvas.style) {
+      try {
+        dmCanvas.style.opacity = String(num(st.dmOpacity, 80, 10, 100) / 100)
+      } catch (e) {
+        /* ignore */
+      }
+    }
+  }
+  /** 把弹幕设置同步到控件（含恢复后回填）。 */
+  function syncDmSettings() {
+    if (dmSizeRange !== null) dmSizeRange.value = String(Math.round(st.dmSize))
+    if (dmSizeVal !== null) dmSizeVal.textContent = Math.round(st.dmSize) + '%'
+    if (dmOpacityRange !== null) dmOpacityRange.value = String(Math.round(st.dmOpacity))
+    if (dmOpacityVal !== null) dmOpacityVal.textContent = Math.round(st.dmOpacity) + '%'
+    if (dmAreaRange !== null) dmAreaRange.value = String(Math.round(st.dmArea))
+    if (dmAreaVal !== null) dmAreaVal.textContent = Math.round(st.dmArea) + '%'
+    for (var i = 0; i < dmSpeedBtns.length; i += 1) {
+      var b = dmSpeedBtns[i]
+      var v = Number(b.getAttribute('data-speed'))
+      b.setAttribute('data-on', v === Math.round(st.dmSpeed) ? '1' : '0')
+    }
+    applyDmOpacity()
   }
 
   function dmColorOf(c) {
@@ -2872,19 +2966,22 @@
     var text = String(d.text || '').trim()
     if (!text) return
     var color = dmColorOf(d.color)
-    var fontSize = Math.max(18, Math.round(h * 0.05))
+    var fontSize = dmFontPx(h)
+    // 显示区域：只在上方 dmArea% 的画面里排弹幕（B站「显示区域」同义）。
+    var bandH = Math.max(fontSize + 10, h * (num(st.dmArea, 100, 25, 100) / 100))
     // 顶栏(5)/底栏(6)：固定位置停留一小段；普通滚动(1/4)从右往左匀速。
     if (d.mode === 5 || d.mode === 6) {
-      var topY = d.mode === 5 ? fontSize + 6 : h - fontSize - 12
-      dmActive.push({ fixed: true, x: 0, y: topY, text: text, color: color, size: fontSize, born: Date.now() })
+      var topY = d.mode === 5 ? fontSize + 6 : bandH - fontSize - 12
+      dmActive.push({ fixed: true, x: 6, y: topY, text: text, color: color, size: fontSize, born: Date.now() })
       return
     }
-    var laneCount = Math.max(1, Math.floor((h - 20) / (fontSize + 8)))
+    var laneCount = Math.max(1, Math.floor((bandH - 20) / (fontSize + 8)))
     var lane = (dmLaneSeed = (dmLaneSeed + 1) % laneCount)
+    var speedFactor = num(st.dmSpeed, 100, 40, 250) / 100
     dmActive.push({
       x: w,
       y: 8 + lane * (fontSize + 8) + fontSize / 2,
-      speed: Math.max(60, w / 8),
+      speed: Math.max(40, (w / 8) * speedFactor),
       text: text,
       color: color,
       size: fontSize,
@@ -3219,6 +3316,11 @@
     })
     topArea.appendChild(now)
 
+    // 分P选择器：常驻视频信息下方（顶部区域，不随标签页滚动），多 P 视频展现。
+    pageWrap = el('div', 'dsbili-pages')
+    pageWrap.setAttribute('hidden', '')
+    topArea.appendChild(pageWrap)
+
     // 进度条（可拖动）
     var progRow = el('div', 'dsbili-row')
     var progHead = el('div', 'dsbili-rowhead')
@@ -3309,9 +3411,6 @@
     hdRow.appendChild(hdHead)
     hdRow.appendChild(hdBtn)
     qualityWrap = el('div', 'dsbili-hd-quality')
-    // 分P选择器：多 P 视频才显示（syncPages 里控制 hidden）。
-    pageWrap = el('div', 'dsbili-pages')
-    pane('play').appendChild(pageWrap)
     pane('play').appendChild(hdRow)
     pane('play').appendChild(qualityWrap)
 
@@ -3560,6 +3659,100 @@
     veilRow.appendChild(veilHead)
     veilRow.appendChild(veilRange)
     pane('settings').appendChild(veilRow)
+
+    // ── 弹幕外观（对齐 B 站播放器：字号 / 不透明度 / 速度 / 显示区域）──
+    var dmSettingsHead = el('div', 'dsbili-rowhead')
+    dmSettingsHead.appendChild(el('span', null, '弹幕设置'))
+    var dmHint = el('span', 'dsbili-valued', '跟随画面比例')
+    dmSettingsHead.appendChild(dmHint)
+    pane('settings').appendChild(dmSettingsHead)
+
+    var dmSizeRow = el('div', 'dsbili-row')
+    var dmSizeHead = el('div', 'dsbili-rowhead')
+    dmSizeHead.appendChild(el('span', null, '弹幕字号'))
+    dmSizeVal = el('span', 'dsbili-valued', Math.round(st.dmSize) + '%')
+    dmSizeHead.appendChild(dmSizeVal)
+    dmSizeRange = el('input', 'dsbili-range')
+    dmSizeRange.type = 'range'
+    dmSizeRange.min = '50'
+    dmSizeRange.max = '200'
+    dmSizeRange.step = '5'
+    dmSizeRange.value = String(Math.round(st.dmSize))
+    dmSizeRange.addEventListener('input', function () {
+      st.dmSize = num(Number(dmSizeRange.value), 100, 50, 200)
+      if (dmSizeVal !== null) dmSizeVal.textContent = Math.round(st.dmSize) + '%'
+      persist()
+    })
+    dmSizeRow.appendChild(dmSizeHead)
+    dmSizeRow.appendChild(dmSizeRange)
+    pane('settings').appendChild(dmSizeRow)
+
+    var dmOpacityRow = el('div', 'dsbili-row')
+    var dmOpacityHead = el('div', 'dsbili-rowhead')
+    dmOpacityHead.appendChild(el('span', null, '弹幕不透明度'))
+    dmOpacityVal = el('span', 'dsbili-valued', Math.round(st.dmOpacity) + '%')
+    dmOpacityHead.appendChild(dmOpacityVal)
+    dmOpacityRange = el('input', 'dsbili-range')
+    dmOpacityRange.type = 'range'
+    dmOpacityRange.min = '10'
+    dmOpacityRange.max = '100'
+    dmOpacityRange.value = String(Math.round(st.dmOpacity))
+    dmOpacityRange.addEventListener('input', function () {
+      st.dmOpacity = num(Number(dmOpacityRange.value), 80, 10, 100)
+      if (dmOpacityVal !== null) dmOpacityVal.textContent = Math.round(st.dmOpacity) + '%'
+      applyDmOpacity()
+      persist()
+    })
+    dmOpacityRow.appendChild(dmOpacityHead)
+    dmOpacityRow.appendChild(dmOpacityRange)
+    pane('settings').appendChild(dmOpacityRow)
+
+    var dmSpeedRow = el('div', 'dsbili-row')
+    var dmSpeedHead = el('div', 'dsbili-rowhead')
+    dmSpeedHead.appendChild(el('span', null, '弹幕速度'))
+    var dmSpeedBtnsWrap = el('div', 'dsbili-btnrow')
+    dmSpeedBtns = []
+    var dmSpeedOptions = [
+      { label: '慢', value: 60 },
+      { label: '适中', value: 100 },
+      { label: '快', value: 160 },
+    ]
+    for (var dsi = 0; dsi < dmSpeedOptions.length; dsi += 1) {
+      ;(function (opt) {
+        var b = el('button', 'dsbili-btn dsbili-dm-speed-btn', opt.label)
+        b.setAttribute('data-speed', String(opt.value))
+        b.addEventListener('click', function () {
+          st.dmSpeed = opt.value
+          syncDmSettings()
+          persist()
+        })
+        dmSpeedBtnsWrap.appendChild(b)
+        dmSpeedBtns.push(b)
+      })(dmSpeedOptions[dsi])
+    }
+    dmSpeedRow.appendChild(dmSpeedHead)
+    dmSpeedRow.appendChild(dmSpeedBtnsWrap)
+    pane('settings').appendChild(dmSpeedRow)
+
+    var dmAreaRow = el('div', 'dsbili-row')
+    var dmAreaHead = el('div', 'dsbili-rowhead')
+    dmAreaHead.appendChild(el('span', null, '显示区域'))
+    dmAreaVal = el('span', 'dsbili-valued', Math.round(st.dmArea) + '%')
+    dmAreaHead.appendChild(dmAreaVal)
+    dmAreaRange = el('input', 'dsbili-range')
+    dmAreaRange.type = 'range'
+    dmAreaRange.min = '25'
+    dmAreaRange.max = '100'
+    dmAreaRange.value = String(Math.round(st.dmArea))
+    dmAreaRange.addEventListener('input', function () {
+      st.dmArea = num(Number(dmAreaRange.value), 100, 25, 100)
+      if (dmAreaVal !== null) dmAreaVal.textContent = Math.round(st.dmArea) + '%'
+      persist()
+    })
+    dmAreaRow.appendChild(dmAreaHead)
+    dmAreaRow.appendChild(dmAreaRange)
+    pane('settings').appendChild(dmAreaRow)
+    syncDmSettings()
 
     // 轮播 / 来源切换：放在音量·界面不透明度·蒙版之后、列表之前 ——
     // 选完来源立刻在下方看到对应列表（用户反馈的布局顺序）。

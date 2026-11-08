@@ -48,6 +48,7 @@ function makeNode(tag) {
       },
     },
     _attrs: {},
+    _listeners: {},
     setAttribute(k, v) {
       this._attrs[k] = String(v)
     },
@@ -78,8 +79,21 @@ function makeNode(tag) {
       c.parentNode = null
       return c
     },
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(type, fn) {
+      this._listeners[type] = this._listeners[type] || []
+      this._listeners[type].push(fn)
+    },
+    removeEventListener(type, fn) {
+      const a = this._listeners[type]
+      if (a) {
+        const i = a.indexOf(fn)
+        if (i >= 0) a.splice(i, 1)
+      }
+    },
+    emit(type, ev) {
+      const a = this._listeners[type]
+      if (a) for (const fn of a.slice()) fn(ev || { type })
+    },
     querySelectorAll() {
       return []
     },
@@ -879,6 +893,8 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
     } else if (u.includes('/dm')) {
       dmCalls.push(u)
       payload = { ok: true, list: [{ t: 0, mode: 1, color: 16777215, text: '你好' }, { t: 2.5, mode: 5, color: 16711680, text: '顶弹幕' }] }
+    } else if (u.includes('/queue')) {
+      payload = { ok: true, list: [{ bvid: 'BV1Q111', title: '队列一' }, { bvid: 'BV1Q222', title: '队列二' }] }
     } else if (u.includes('/play')) {
       playCalls.push(u)
       const p = /[?&]p=(\d+)/i.exec(u)
@@ -970,6 +986,23 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
   await new Promise((r) => setTimeout(r, 40))
   ok('download body carries current pid', !!downBodies[0] && downBodies[0].pid === 2, downBodies[0])
 
+  // 列表连播：开启后，当前视频 ended 应自动切到队列下一支
+  const vidEl = findById(doc.body, 'dsbili-video')
+  feat.loadQueue()
+  await new Promise((r) => setTimeout(r, 60))
+  feat.carousel()
+  ok('carousel enabled', feat.state.carousel === true)
+  ok('carousel turns off native loop so ended can fire', !vidEl.loop)
+  const beforeEnded = playCalls.length
+  vidEl.emit('ended')
+  await new Promise((r) => setTimeout(r, 160))
+  ok(
+    'carousel advances to next queue item on ended',
+    playCalls.length > beforeEnded && /bvid=BV1Q111/.test(String(playCalls[playCalls.length - 1])),
+    playCalls[playCalls.length - 1],
+  )
+  feat.carousel() // 关掉，后续测试不受影响
+
   // ③ 纯氛围静音墙纸：开关 + 静音锁定
   ok('wallpaper off by default', feat.state.wallpaper === false)
   feat.wallpaper()
@@ -977,6 +1010,13 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
   ok('wallpaper forces muted', feat.state.muted === true)
   const vid = findById(doc.body, 'dsbili-video')
   ok('wallpaper mutes the video element', !!vid && vid.muted === true, vid && vid.muted)
+  // 关闭墙纸要还原开启前的状态（不是单向）——静音应回到关闭前（默认未静音）
+  feat.wallpaper()
+  ok(
+    'wallpaper off restores prior muted state',
+    feat.state.wallpaper === false && feat.state.muted === false && !!vid && vid.muted === false,
+    'wallpaper=' + feat.state.wallpaper + ' muted=' + feat.state.muted,
+  )
   // ④ 弹幕：开启后按当前 cid 拉取
   ok('danmaku off by default', feat.state.dm === false)
   feat.danmaku()
@@ -987,7 +1027,7 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
   ok('danmaku canvas present in backdrop', !!dmCanvas && !!backdropOf())
 
   // ⑤ 分P/墙纸/弹幕都落盘
-  feat.wallpaper(); feat.danmaku() // 关掉，避免后台轮询；同时触发 persist
+  feat.danmaku() // 关掉，避免后台轮询；同时触发 persist
   await new Promise((r) => setTimeout(r, 700)) // persist 有 500ms 去抖，等它真正 POST
   ok('state persists pid', !!lastState && lastState.pid === 2, lastState)
   ok('state persists wallpaper', !!lastState && lastState.wallpaper === false, lastState)
