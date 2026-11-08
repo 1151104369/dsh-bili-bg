@@ -228,6 +228,7 @@
   var veilVal = null
   var srcPopular = null
   var srcRanking = null
+  var srcDance = null
   var fitBtn = null
   var bgBtn = null
   var miniPlayBtn = null
@@ -1890,7 +1891,14 @@
     if (!ROUTES.queue) return Promise.resolve()
     if (st.queueBusy) return Promise.resolve()
     st.queueBusy = true
-    var label = st.source === 'ranking' ? '排行榜' : st.source === 'feed' ? '首页推荐' : '热门'
+    var label =
+      st.source === 'ranking'
+        ? '排行榜'
+        : st.source === 'dance'
+          ? '舞蹈区'
+          : st.source === 'feed'
+            ? '首页推荐'
+            : '热门'
     setStatus('加载' + label + '…', '')
     return fetchJson(ROUTES.queue + '?source=' + st.source + '&count=' + st.count, { cache: 'no-store' }).then(
       function (data) {
@@ -2076,7 +2084,7 @@
       function (data) {
         var s = data && data.state
         if (!isObj(s)) return
-        st.source = s.source === 'ranking' || s.source === 'feed' ? s.source : st.source
+        st.source = s.source === 'ranking' || s.source === 'dance' || s.source === 'feed' ? s.source : st.source
         st.sourcePicked = s.sourcePicked === true
         st.count = num(s.count, st.count, 1, 30)
         st.carousel = s.carousel === true
@@ -2604,6 +2612,7 @@
     if (nextBtn !== null) nextBtn.disabled = st.busy
     if (srcPopular !== null) srcPopular.setAttribute('aria-pressed', st.source === 'popular' ? 'true' : 'false')
     if (srcRanking !== null) srcRanking.setAttribute('aria-pressed', st.source === 'ranking' ? 'true' : 'false')
+    if (srcDance !== null) srcDance.setAttribute('aria-pressed', st.source === 'dance' ? 'true' : 'false')
     if (srcFeed !== null) srcFeed.setAttribute('aria-pressed', st.source === 'feed' ? 'true' : 'false')
     if (surfaceVal !== null) surfaceVal.textContent = Math.round(st.surface * 100) + '%'
     if (veilVal !== null) veilVal.textContent = Math.round(st.veil * 100) + '%'
@@ -3663,6 +3672,16 @@
       loadQueue()
       persist()
     })
+    srcDance = el('button', 'dsbili-btn', '舞蹈区')
+    srcDance.setAttribute('title', '舞蹈区排行榜（宅舞 / 街舞 / 舞蹈综合等）')
+    srcDance.addEventListener('click', function () {
+      st.source = 'dance'
+      st.sourcePicked = true
+      st.index = -1
+      syncButtons()
+      loadQueue()
+      persist()
+    })
     srcFeed = el('button', 'dsbili-btn', '首页推荐')
     srcFeed.setAttribute('title', '登录后可用：账号首页推荐（需先扫码登录）')
     srcFeed.addEventListener('click', function () {
@@ -3680,6 +3699,7 @@
     row4.appendChild(srcFeed)
     row4.appendChild(srcPopular)
     row4.appendChild(srcRanking)
+    row4.appendChild(srcDance)
 
     // 音量（和进度条一样是滑动条，紧挨着放在进度下面）；静音按钮只留喇叭图标，放本行右侧
     var volRow = el('div', 'dsbili-row')
