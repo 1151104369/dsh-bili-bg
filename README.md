@@ -79,6 +79,8 @@
   - init 探针只读约定字节数（够数即 cancel）：即使 CDN 忽略 `Range`、返回整条数 GB 流，也不会
     卡到 20s 超时；直连 mediaBase 6s 无响应会自动改用同源相对地址。
   - 未登录开高清会提示「需登录」；服务端拿不到分轨也会自动回退并明确告知。
+- **设置页「插件信息」**：显示当前版本、**🐙 GitHub 主页**（一键在浏览器打开仓库）、
+  **🔄 检查更新**（对比 GitHub master 的 `package.json` 版本，提示有无新版；宿主侧 5 分钟缓存）
 - 快捷键 `Ctrl+Shift+B` 开关面板
 - **分P**：多 P 视频在**顶部视频信息下方**显示分P选择器（常驻、不随标签页滚动），点某 P 即切（换 cid 重解析，从头播）；当前分P会记到状态文件，重启后恢复；下载也跟随当前 P
 - **弹幕**：`💬 弹幕` 开关，在视频上渲染随播放进度滚动的氛围弹幕（canvas 浮层贴合**视频实际显示区**、字号按画面比例；获取/渲染任何失败自动隐藏，绝不干扰播放）。设置页可调：**弹幕字号 / 不透明度 / 速度 / 显示区域**（均持久化）。**只在视频真正出画面并播放时绘制**（缓冲/暂停时冻结，切视频不会出现弹幕先于画面）
@@ -108,6 +110,7 @@ lib/ffmpeg.js       ffmpeg 探测 / 一键下载（npmmirror 平台包 tgz，内
 lib/save-dialog.js  Windows「另存为」对话框（PowerShell + WinForms，零依赖）
 lib/injections.js   webserver/index-inject 结构化注入行
 lib/danmaku.js      弹幕获取：按 cid 拉 gzip/deflate 压缩 XML 并解析成前端可渲染数组（宿主侧）
+lib/update.js       检查更新：对比 GitHub master 的 package.json 版本 + 外部 URL 白名单
 runtime/skin.js     浏览器端：背景层 + 悬浮胶囊 + 控制面板 + 账号区 + 进度/倍速/清屏 + 高清开关 + 分P + 弹幕 + 静音墙纸
 runtime/dash.js     浏览器端 MSE DASH 播放器：init-先+mof 索引 seek+两轨对称回收+降级回退（独立模块）
 runtime/skin.css    样式

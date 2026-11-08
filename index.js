@@ -41,6 +41,7 @@ import { createDownloader } from './lib/download.js'
 import { pickSavePath } from './lib/save-dialog.js'
 import { describeFfmpeg, installFfmpeg, getInstallState, cancelInstall } from './lib/ffmpeg.js'
 import { fetchDanmaku } from './lib/danmaku.js'
+import { checkUpdate, REPO_URL, REPO_OWNER, REPO_NAME, safeExternalUrl } from './lib/update.js'
 import { BOOTSTRAP_GLOBAL, buildInjectionRows } from './lib/injections.js'
 
 export { BOOTSTRAP_GLOBAL, ROUTE_PREFIX }
@@ -51,7 +52,7 @@ export const name = 'dsh-bili-bg'
 export const inject = []
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.10.4'
+export const VERSION = '0.11.0'
 
 const CONFIG_ROUTE = `${ROUTE_PREFIX}/config.json`
 const PLAY_ROUTE = `${ROUTE_PREFIX}/play`
@@ -67,6 +68,8 @@ const DOWNLOADS_ROUTE = `${ROUTE_PREFIX}/downloads`
 const FFMPEG_ROUTE = `${ROUTE_PREFIX}/ffmpeg`
 const FFMPEG_INSTALL_ROUTE = `${ROUTE_PREFIX}/ffmpeg/install`
 const OPEN_ROUTE = `${ROUTE_PREFIX}/open`
+const OPEN_URL_ROUTE = `${ROUTE_PREFIX}/open-url`
+const UPDATE_ROUTE = `${ROUTE_PREFIX}/update`
 const DM_ROUTE = `${ROUTE_PREFIX}/dm`
 
 /** 已生成、尚未扫码/未过期的二维码内容（按 qrcode_key 索引，仅内存，随扫码/过期清理）。 */
@@ -242,6 +245,9 @@ export function apply(ctx) {
     },
     open: OPEN_ROUTE,
     dm: DM_ROUTE,
+    openUrl: OPEN_URL_ROUTE,
+    update: UPDATE_ROUTE,
+    repo: { owner: REPO_OWNER, name: REPO_NAME, url: REPO_URL },
     defaults: {
       source: 'popular',
       count: 12,
@@ -666,6 +672,44 @@ export function apply(ctx) {
             const target = `https://www.bilibili.com/video/${bvid}`
             const opened = openExternal(target)
             sendJson(res, opened ? 200 : 500, opened ? { ok: true, url: target } : { ok: false, error: '无法调起浏览器', url: target })
+          },
+        }),
+      )
+
+      // 打开任意白名单站点（GitHub 插件主页等）。只允许 https/http + 指定域名，
+      // 绝不把用户输入直接拼进系统命令。
+      disposers.push(
+        child.webServer.register({
+          kind: 'exact',
+          path: OPEN_URL_ROUTE,
+          handler: (req, res) => {
+            const url = parseUrl(req)
+            let target = safeExternalUrl(url.searchParams.get('url') || '')
+            if (!target) {
+              // 缺省打开插件主页（方便前端只调一次）。
+              target = url.searchParams.get('url') ? '' : REPO_URL
+            }
+            if (!target) {
+              sendJson(res, 400, { ok: false, error: 'URL 不在允许的站点白名单内' })
+              return
+            }
+            const opened = openExternal(target)
+            sendJson(res, opened ? 200 : 500, opened ? { ok: true, url: target } : { ok: false, error: '无法调起浏览器', url: target })
+          },
+        }),
+      )
+
+      // 检查更新：对比 master 的 package.json 版本（5 分钟缓存）。
+      disposers.push(
+        child.webServer.register({
+          kind: 'exact',
+          path: UPDATE_ROUTE,
+          handler: async (req, res) => {
+            try {
+              sendJson(res, 200, await checkUpdate(VERSION))
+            } catch (error) {
+              sendJson(res, 502, { ok: false, error: describe(error), current: VERSION, url: REPO_URL })
+            }
           },
         }),
       )

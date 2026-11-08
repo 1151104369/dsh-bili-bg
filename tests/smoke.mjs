@@ -371,6 +371,32 @@ ok('open route rejects invalid bvid', openBad.ok === false && typeof openBad.err
 const openMissing = await (await fetch(base + '/dsh-bili/open')).json()
 ok('open route requires bvid', openMissing.ok === false, openMissing)
 
+// 插件信息：GitHub 主页跳转（白名单）+ 检查更新
+ok('config exposes open-url route', typeof cfg.openUrl === 'string' && cfg.openUrl.includes('/dsh-bili/open-url'), cfg.openUrl)
+ok('config exposes update route', typeof cfg.update === 'string' && cfg.update.includes('/dsh-bili/update'), cfg.update)
+ok('config exposes repo info', !!(cfg.repo && cfg.repo.url && cfg.repo.url.indexOf('github.com') !== -1), cfg.repo)
+{
+  // 非白名单域名必须被拒绝（绝不能把任意 URL 拼进系统命令）。
+  const evil = await (
+    await fetch(base + '/dsh-bili/open-url?url=' + encodeURIComponent('https://evil.example.com/x'))
+  ).json()
+  ok('open-url rejects non-whitelisted host', evil.ok === false, evil)
+  const badScheme = await (
+    await fetch(base + '/dsh-bili/open-url?url=' + encodeURIComponent('file:///C:/Windows/System32/calc.exe'))
+  ).json()
+  ok('open-url rejects non-http scheme', badScheme.ok === false, badScheme)
+}
+{
+  const upd = await (await fetch(base + '/dsh-bili/update')).json()
+  ok(
+    'update route returns version info',
+    typeof upd === 'object' &&
+      typeof upd.current === 'string' &&
+      (upd.ok === true ? typeof upd.latest === 'string' && typeof upd.hasUpdate === 'boolean' : typeof upd.error === 'string'),
+    { ok: upd.ok, current: upd.current, latest: upd.latest, hasUpdate: upd.hasUpdate, error: upd.error },
+  )
+}
+
 // ② poll 状态解析回归：新版接口状态在 data.code（顶层 code 恒为 0），绝不能误判为"登录成功"
 const pollWait = parsePoll({ code: 0, message: 'OK', data: { url: '', refresh_token: '', timestamp: 0, code: 86101, message: '未扫码' } }, {})
 ok('poll wait from data.code (new api)', pollWait.status === 'wait', pollWait.status)

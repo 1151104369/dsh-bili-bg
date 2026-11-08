@@ -58,6 +58,9 @@
     : null
   ROUTES.dm = str(cfg.dm)
   ROUTES.open = str(cfg.open)
+  ROUTES.openUrl = str(cfg.openUrl)
+  ROUTES.update = str(cfg.update)
+  ROUTES.repo = isObj(cfg.repo) ? { owner: str(cfg.repo.owner), name: str(cfg.repo.name), url: str(cfg.repo.url) } : null
 
   // ────────────────────────────── 小工具 ──────────────────────────────
 
@@ -178,6 +181,9 @@
     dmArea: 100,
     // 静音墙纸开启前的原始状态（关闭时还原，避免单向）。
     wallpaperSaved: null,
+    // 检查更新：最近一次结果（不持久化）。
+    updateBusy: false,
+    updateInfo: null,
   }
 
   // DOM
@@ -224,6 +230,9 @@
   var dmAreaRange = null
   var dmAreaVal = null
   var dmSpeedBtns = []
+  var githubBtn = null
+  var updateBtn = null
+  var updateStatusEl = null
   var surfaceRange = null
   var surfaceVal = null
   var veilRange = null
@@ -1871,6 +1880,55 @@
     qrOverlay.appendChild(card)
   }
 
+  /** 是否运行在 Electron 桌面壳里（Web 模式要走浏览器 window.open）。 */
+  function isElectronShell() {
+    try {
+      return /electron/i.test(String((global.navigator && global.navigator.userAgent) || ''))
+    } catch (e) {
+      return false
+    }
+  }
+
+  /**
+   * 用系统浏览器打开发起的一个外部 URL。
+   * Web 模式必须在本点击手势内**同步** window.open（放到 fetch 回调里会被弹窗拦截）；
+   * Electron 走宿主 /open-url（白名单）；宿主不可用时再退 window.open。
+   */
+  function openUrlExternally(url, okMessage) {
+    if (!url) return
+    var done = function (msg) {
+      setStatus(msg, 'ok')
+    }
+    var browserFallback = function () {
+      try {
+        if (global.open(url, '_blank')) {
+          done(okMessage || '已在浏览器打开')
+          return true
+        }
+      } catch (e) {
+        /* ignore */
+      }
+      setStatus('打不开浏览器，可手动访问：' + url, 'error')
+      return false
+    }
+    if (!isElectronShell()) {
+      if (browserFallback()) return
+    }
+    if (ROUTES.openUrl) {
+      fetchJson(ROUTES.openUrl + '?url=' + encodeURIComponent(url), { cache: 'no-store' }).then(
+        function (data) {
+          if (data && data.ok === true) done(okMessage || '已在系统浏览器打开')
+          else browserFallback()
+        },
+        function () {
+          browserFallback()
+        },
+      )
+      return
+    }
+    browserFallback()
+  }
+
   /** 在系统默认浏览器打开当前 B 站视频。 */
   function openCurrentVideo() {
     var bvid = st.current && st.current.bvid ? st.current.bvid : ''
@@ -1880,24 +1938,14 @@
     }
     var url = 'https://www.bilibili.com/video/' + encodeURIComponent(bvid)
     // 桌面壳(Electron)用宿主打开系统浏览器；Web 模式用页面自身浏览器开新标签。
-    // 注意：window.open 必须在点击手势内**同步**调用，放到 fetch 回调里会被弹窗拦截，
-    // 这也是 web 模式点卡片「没反应」的原因。
-    var isElectron = false
-    try {
-      isElectron = /electron/i.test(String((global.navigator && global.navigator.userAgent) || ''))
-    } catch (e) {
-      isElectron = false
-    }
-    if (!isElectron) {
-      var opened = null
+    if (!isElectronShell()) {
       try {
-        opened = global.open(url, '_blank')
+        if (global.open(url, '_blank')) {
+          setStatus('已在浏览器打开该视频', 'ok')
+          return
+        }
       } catch (e) {
-        opened = null
-      }
-      if (opened) {
-        setStatus('已在浏览器打开该视频', 'ok')
-        return
+        /* ignore */
       }
     }
     var fallback = function () {
@@ -1924,6 +1972,79 @@
       return
     }
     fallback()
+  }
+
+  // ────────────────────────────── 插件信息 / 检查更新 ──────────────────────────────
+
+  /** 插件 GitHub 主页地址（宿主带了 repo 就用宿主的）。 */
+  function repoUrl() {
+    return (ROUTES.repo && ROUTES.repo.url) || 'https://github.com/1151104369/dsh-bili-bg'
+  }
+
+  /** 打开插件 GitHub 主页。 */
+  function openRepoPage() {
+    openUrlExternally(repoUrl(), '已在浏览器打开插件主页')
+  }
+
+  /** 渲染检查更新结果到设置页状态行。 */
+  function renderUpdateInfo() {
+    if (updateStatusEl === null) return
+    var info = st.updateInfo
+    if (st.updateBusy) {
+      updateStatusEl.textContent = '正在检查更新…'
+      updateStatusEl.setAttribute('data-level', '')
+      return
+    }
+    if (!info) {
+      updateStatusEl.textContent = '当前版本 v' + str(d.version) + '（点「检查更新」看有没有新版）'
+      updateStatusEl.setAttribute('data-level', '')
+      return
+    }
+    if (info.ok !== true) {
+      updateStatusEl.textContent = info.error || '检查更新失败，请稍后再试'
+      updateStatusEl.setAttribute('data-level', 'error')
+      return
+    }
+    if (info.hasUpdate) {
+      updateStatusEl.textContent = '发现新版本 v' + info.latest + '（当前 v' + info.current + '）'
+      updateStatusEl.setAttribute('data-level', 'warn')
+      return
+    }
+    updateStatusEl.textContent = '已是最新版本 v' + info.current
+    updateStatusEl.setAttribute('data-level', 'ok')
+  }
+
+  /** 检查更新：请求宿主 /update，对比 master 的 package.json。 */
+  function checkUpdates() {
+    if (st.updateBusy) return
+    if (!ROUTES.update) {
+      setStatus('当前宿主未提供检查更新接口', 'error')
+      return
+    }
+    st.updateBusy = true
+    renderUpdateInfo()
+    syncButtons()
+    var settle = function (info) {
+      st.updateBusy = false
+      st.updateInfo = info
+      renderUpdateInfo()
+      syncButtons()
+      if (info && info.ok === true && info.hasUpdate) {
+        setStatus('发现新版本 v' + info.latest + '，点「GitHub 主页」查看更新', 'ok')
+      } else if (info && info.ok === true) {
+        setStatus('已是最新版本 v' + info.current, 'ok')
+      } else if (info) {
+        setStatus(info.error || '检查更新失败', 'error')
+      }
+    }
+    fetchJson(ROUTES.update, { cache: 'no-store' }).then(
+      function (data) {
+        settle(data && typeof data === 'object' ? data : { ok: false, error: '检查更新返回异常' })
+      },
+      function (error) {
+        settle({ ok: false, error: '检查更新失败：' + (error && error.message ? error.message : error), current: str(d.version) })
+      },
+    )
   }
 
   // ────────────────────────────── 队列 ──────────────────────────────
@@ -2662,6 +2783,10 @@
     if (dmBtn !== null) {
       dmBtn.textContent = st.dm ? '💬 弹幕:开' : '💬 弹幕'
       dmBtn.setAttribute('data-on', st.dm ? '1' : '0')
+    }
+    if (updateBtn !== null) {
+      updateBtn.disabled = st.updateBusy === true
+      updateBtn.textContent = st.updateBusy ? '⏳ 检查中…' : '🔄 检查更新'
     }
     syncDmSettings()
     if (prevBtn !== null) prevBtn.disabled = st.busy
@@ -3952,6 +4077,30 @@
     dmAreaRow.appendChild(dmAreaRange)
     pane('settings').appendChild(dmAreaRow)
     syncDmSettings()
+
+    // ── 插件信息：GitHub 主页跳转 + 检查更新 ──
+    var aboutHead = el('div', 'dsbili-rowhead dsbili-about-head')
+    aboutHead.appendChild(el('span', null, '插件信息'))
+    aboutHead.appendChild(el('span', 'dsbili-valued', 'v' + str(d.version)))
+    pane('settings').appendChild(aboutHead)
+
+    var aboutRow = el('div', 'dsbili-btnrow')
+    githubBtn = el('button', 'dsbili-btn', '🐙 GitHub 主页')
+    githubBtn.id = 'dsbili-github-btn'
+    githubBtn.setAttribute('title', '在浏览器打开插件 GitHub 主页：' + repoUrl())
+    githubBtn.addEventListener('click', openRepoPage)
+    aboutRow.appendChild(githubBtn)
+    updateBtn = el('button', 'dsbili-btn', '🔄 检查更新')
+    updateBtn.id = 'dsbili-update-btn'
+    updateBtn.setAttribute('title', '检查 GitHub 上是否有新版本')
+    updateBtn.addEventListener('click', checkUpdates)
+    aboutRow.appendChild(updateBtn)
+    pane('settings').appendChild(aboutRow)
+
+    updateStatusEl = el('div', 'dsbili-status dsbili-update-status', '')
+    updateStatusEl.setAttribute('data-level', '')
+    pane('settings').appendChild(updateStatusEl)
+    renderUpdateInfo()
 
     // 轮播 / 来源切换：放在音量·界面不透明度·蒙版之后、列表之前 ——
     // 选完来源立刻在下方看到对应列表（用户反馈的布局顺序）。

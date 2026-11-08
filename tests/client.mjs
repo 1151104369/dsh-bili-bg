@@ -894,6 +894,8 @@ recoverApi.teardown() // 清掉结尾看门狗等定时器，避免测试进程�
   const dmCalls = []
   const downBodies = []
   let lastState = null
+  const updateCalls = []
+  const openUrlCalls = []
   function featFetch(url, opts) {
     const u = String(url)
     const method = opts && opts.method
@@ -918,6 +920,12 @@ recoverApi.teardown() // 清掉结尾看门狗等定时器，避免测试进程�
     } else if (u.includes('/dm')) {
       dmCalls.push(u)
       payload = { ok: true, list: [{ t: 0, mode: 1, color: 16777215, text: '你好' }, { t: 2.5, mode: 5, color: 16711680, text: '顶弹幕' }] }
+    } else if (u.includes('/update')) {
+      updateCalls.push(u)
+      payload = { ok: true, current: '0.10.4', latest: '0.11.0', hasUpdate: true, url: 'https://github.com/1151104369/dsh-bili-bg', checkedAt: Date.now(), commit: { sha: 'abc1234' } }
+    } else if (u.includes('/open-url')) {
+      openUrlCalls.push(u)
+      payload = { ok: true, url: 'https://github.com/1151104369/dsh-bili-bg' }
     } else if (u.includes('/queue')) {
       payload = { ok: true, list: [{ bvid: 'BV1Q111', title: '队列一' }, { bvid: 'BV1Q222', title: '队列二' }] }
     } else if (u.includes('/play')) {
@@ -954,6 +962,11 @@ recoverApi.teardown() // 清掉结尾看门狗等定时器，避免测试进程�
     clearInterval,
     console,
     location: { search: '' },
+    navigator: { userAgent: 'Mozilla/5.0 (Windows NT 10.0) Chrome/122.0 Safari/537.36' },
+    open: function (url) {
+      openedUrls.push(String(url))
+      return {}
+    },
     __DSH_BILI_BG__: {
       version: '0.9.0',
       config: '/dsh-bili/config.json',
@@ -966,6 +979,9 @@ recoverApi.teardown() // 清掉结尾看门狗等定时器，避免测试进程�
       ffmpeg: { status: '/dsh-bili/ffmpeg', install: '/dsh-bili/ffmpeg/install' },
       open: '/dsh-bili/open',
       dm: '/dsh-bili/dm',
+      openUrl: '/dsh-bili/open-url',
+      update: '/dsh-bili/update',
+      repo: { owner: '1151104369', name: 'dsh-bili-bg', url: 'https://github.com/1151104369/dsh-bili-bg' },
       defaults: { source: 'popular', count: 12, volume: 0.8, veil: 0.32, veillight: 0.3 },
     },
   }
@@ -1076,10 +1092,38 @@ recoverApi.teardown() // 清掉结尾看门狗等定时器，避免测试进程�
   ok('state persists pid', !!lastState && lastState.pid === 2, lastState)
   ok('state persists wallpaper', !!lastState && lastState.wallpaper === false, lastState)
 
+  // ── 插件信息：GitHub 主页跳转 + 检查更新 ──
+  const githubBtnEl = findById(doc.body, 'dsbili-github-btn')
+  ok('settings has github homepage button', !!githubBtnEl)
+  const updateBtnEl = findById(doc.body, 'dsbili-update-btn')
+  ok('settings has check-update button', !!updateBtnEl)
+  const updateStatusNode = findByClass(doc.body, 'dsbili-update-status')
+  ok('settings has update status line', !!updateStatusNode)
+
+  if (githubBtnEl) {
+    openedUrls.length = 0
+    githubBtnEl.emit('click')
+    ok(
+      'github button opens repo homepage in browser',
+      openedUrls.some((u) => u.indexOf('github.com/1151104369/dsh-bili-bg') !== -1),
+      openedUrls[openedUrls.length - 1],
+    )
+  }
+  if (updateBtnEl) {
+    updateCalls.length = 0
+    updateBtnEl.emit('click')
+    await new Promise((r) => setTimeout(r, 60))
+    ok('check-update hits host update route', updateCalls.length === 1, updateCalls)
+    ok(
+      'check-update shows new version available',
+      !!updateStatusNode && String(updateStatusNode.textContent).indexOf('0.11.0') !== -1,
+      updateStatusNode && updateStatusNode.textContent,
+    )
+    ok('check-update marks warn level for new version', !!updateStatusNode && updateStatusNode.getAttribute('data-level') === 'warn')
+  }
+
   win.__DSH_BILI_BG_API__ && feat.teardown()
 }
-
-// 舞蹈区来源按钮（新增分区）
 {
   const allBtns = []
   const allSelects = []
