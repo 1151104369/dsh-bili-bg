@@ -5,8 +5,8 @@
 #
 # 语法要点：
 #   - 顶层是 YAML 数组；`insert` 追加行。
-#   - `name` 必须与安装的包名一致（@local/dsh-bili-bg），否则 loader 只 warn 跳过。
+#   - `name` 必须与安装的包名一致（发布到 npm 后为 dsh-bili-bg），否则 loader 只 warn 跳过。
 #   - 可调项走运行期配置（$DSH_HOME/dsh-bili-bg.json 或 query 参数），这里不写 config。
 - insert:
     - id: dsh-bili-bg
-      name: '@local/dsh-bili-bg'
+      name: 'dsh-bili-bg'

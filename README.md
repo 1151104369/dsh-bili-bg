@@ -86,14 +86,25 @@
 - **弹幕**：`💬 弹幕` 开关，在视频上渲染随播放进度滚动的氛围弹幕（canvas 浮层贴合**视频实际显示区**、字号按画面比例；获取/渲染任何失败自动隐藏，绝不干扰播放）。设置页可调：**弹幕字号 / 不透明度 / 速度 / 显示区域**（均持久化）。**只在视频真正出画面并播放时绘制**（缓冲/暂停时冻结，切视频不会出现弹幕先于画面）
 - **纯氛围静音墙纸**：设置页 `🖼 静音墙纸` 一键切到「静音 + 悬浮胶囊收起」的无感后台播放；**关闭时还原开启前的静音与胶囊状态**（非单向），重启后保持
 
-## 接入方式
+## 安装
 
-作为本地 bundle 挂到 desktop profile：
+### 从 npm 安装（推荐）
+
+包名 `dsh-bili-bg`，在 DSH 里用插件管理器安装即可：
+
+```
+plugin_manager install_bundle  target: dsh-bili-bg
+```
+
+> 也可以直接 `npm i dsh-bili-bg` 到 profile 目录，然后在 profile 的
+> `dsh.profile.bundles` 里加上 `"dsh-bili-bg"`。
+
+### 本地开发（link 方式）
 
 - `C:\Users\11511\.dsh\profiles\desktop\package.json`
-  - `dependencies` 里加 `"@local/dsh-bili-bg": "link:F:/GitHub/DSH/bundles/dsh-bili-bg"`
-  - `dsh.profile.bundles` 里加 `"@local/dsh-bili-bg"`
-- 在 profile 的 `node_modules/@local/` 下建 Junction 指向本目录
+  - `dependencies` 里加 `"dsh-bili-bg": "link:F:/GitHub/DSH/bundles/dsh-bili-bg"`
+  - `dsh.profile.bundles` 里加 `"dsh-bili-bg"`
+- 在 profile 的 `node_modules/` 下建 Junction（`dsh-bili-bg` → 本目录）
 
 宿主用 `webserver/index-inject` 注入样式与脚本；**桌面壳启动时一次性收集注入表**，所以插件相关改动需要重启 DSH 生效。
 

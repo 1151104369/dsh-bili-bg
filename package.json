@@ -1,7 +1,7 @@
 {
-  "name": "@local/dsh-bili-bg",
+  "name": "dsh-bili-bg",
   "version": "0.11.0",
-  "private": true,
+  "description": "把 B 站视频当作可控的全屏背景，边工作边看：BV 号/链接即播，支持登录高清、分P、弹幕、宅舞区、下载与连播。",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -16,16 +16,33 @@
     "runtime",
     "locale/*.json",
     "icon.svg",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
   ],
   "license": "MIT",
+  "author": "1151104369",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/1151104369/dsh-bili-bg.git"
+  },
+  "homepage": "https://github.com/1151104369/dsh-bili-bg#readme",
+  "bugs": {
+    "url": "https://github.com/1151104369/dsh-bili-bg/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "keywords": [
     "dsh-plugin",
     "deepseek-harness",
+    "dsh",
     "cordis",
     "bilibili",
     "background",
-    "video"
+    "video",
+    "danmaku",
+    "bili"
   ],
   "dsh": {
     "bundle": {
