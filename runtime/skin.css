@@ -228,6 +228,8 @@ body:not([data-ds-dark-theme]) #dsbili-launch {
   top: 80px;
   z-index: 906;
   width: 300px;
+  /* 窄窗口下也别超出视口（否则右侧标题栏/退出按钮会被裁掉） */
+  max-width: calc(100vw - 24px);
   max-height: min(82vh, 700px);
   /* 面板本体**不滚动**：标题栏是固定的一段，滚动发生在 .dsbili-body 内部。 */
   overflow: hidden;
@@ -845,4 +847,70 @@ body:not([data-ds-dark-theme]) .dsbili-qr-card {
   padding: 4px;
   background: #fff;
   border-radius: 6px;
+}
+
+/* 顶部：账号（次要）与视频信息（主卡片）明确区分开 */
+.dsbili-top .dsbili-account-row {
+  opacity: 0.82;
+  font-size: 11.5px;
+}
+
+.dsbili-top .dsbili-account-row .dsbili-account-name {
+  font-weight: 500;
+}
+
+.dsbili-top-sep {
+  height: 1px;
+  margin: 1px 0;
+  background: rgba(198, 220, 246, 0.16);
+}
+
+body:not([data-ds-dark-theme]) .dsbili-top-sep {
+  background: rgba(20, 30, 45, 0.12);
+}
+
+.dsbili-now-top {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(198, 220, 246, 0.12);
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.dsbili-now-top:hover {
+  background: rgba(255, 255, 255, 0.075);
+  border-color: rgba(126, 183, 255, 0.4);
+}
+
+body:not([data-ds-dark-theme]) .dsbili-now-top {
+  background: rgba(20, 30, 45, 0.035);
+  border-color: rgba(20, 30, 45, 0.1);
+}
+
+body:not([data-ds-dark-theme]) .dsbili-now-top:hover {
+  background: rgba(20, 30, 45, 0.06);
+}
+
+.dsbili-now-label {
+  margin-bottom: 3px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  opacity: 0.55;
+}
+
+.dsbili-now-label[data-on="1"] {
+  color: #7eb7ff;
+  opacity: 0.9;
+}
+
+.dsbili-now-top .dsbili-now-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.dsbili-now-top .dsbili-now-meta {
+  margin-top: 3px;
+  font-size: 11px;
+  opacity: 0.65;
 }

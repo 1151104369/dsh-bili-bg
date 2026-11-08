@@ -353,6 +353,10 @@ ok('default tab is play', api.state.tab === 'play' && paneOf('play').getAttribut
 // 顶部常驻：账号 + 视频详情（不在标签页里）；视频详情可点击打开浏览器
 const topArea = findByClass(document.body, 'dsbili-top')
 ok('top area holds account + video detail', !!topArea && !!findById(topArea, 'dsbili-account') && !!findByClass(topArea, 'dsbili-now-top'))
+// 账号与视频信息之间有分隔线 + 视频卡片有「正在播放」小标签（视觉上区分开）
+ok('account and video detail visually separated', !!findByClass(topArea, 'dsbili-top-sep'))
+const nowLabelEl = findByClass(document.body, 'dsbili-now-label')
+ok('video detail card has playing label', !!nowLabelEl && String(nowLabelEl.textContent) === '正在播放', nowLabelEl && nowLabelEl.textContent)
 const nowTop = findByClass(document.body, 'dsbili-now-top')
 ok('video detail is clickable (title hint)', !!nowTop && String(nowTop.getAttribute('title')).includes('浏览器'))
 openCalls.length = 0

@@ -171,6 +171,7 @@
   var launch = null
   var titleEl = null
   var metaEl = null
+  var nowLabelEl = null
   var statusEl = null
   var listEl = null
   var inputEl = null
@@ -1139,7 +1140,8 @@
     qualityWrap.textContent = ''
     qualityButtons = []
     var qualities = st.current && Array.isArray(st.hdQualities) ? st.hdQualities : []
-    if (!st.hd || !qualities.length) {
+    if (!st.hd) return // 高清没开时不显示清晰度区/提示，保持界面干净
+    if (!qualities.length) {
       var note = el('span', 'dsbili-hd-note', st.loggedIn ? '该视频暂无更多清晰度分轨' : '登录后可解锁高清')
       note.style.opacity = '0.5'
       qualityWrap.appendChild(note)
@@ -1828,6 +1830,13 @@
     var left = num(pos.left, NaN, -100000, 100000)
     var top = num(pos.top, NaN, -100000, 100000)
     if (left !== left || top !== top) return
+    // 夹进当前视口，避免换了窗口尺寸/分辨率后面板跑到屏幕外或右侧被裁。
+    var w = panel.offsetWidth || 300
+    var h = panel.offsetHeight || 320
+    var maxLeft = Math.max(0, (global.innerWidth || 0) - w - 8)
+    var maxTop = Math.max(0, (global.innerHeight || 0) - Math.min(h, 120))
+    left = Math.max(0, Math.min(maxLeft, left))
+    top = Math.max(0, Math.min(maxTop, top))
     st.panelPos = { left: Math.round(left), top: Math.round(top) }
     try {
       panel.style.left = Math.round(left) + 'px'
@@ -2404,6 +2413,10 @@
   }
 
   function syncButtons() {
+    if (nowLabelEl !== null) {
+      nowLabelEl.textContent = st.current ? (st.playing ? '正在播放' : '已暂停') : '未播放'
+      nowLabelEl.setAttribute('data-on', st.current ? '1' : '0')
+    }
     if (playBtn !== null) {
       playBtn.textContent = st.playing ? '⏸ 暂停' : '▶ 播放'
       playBtn.setAttribute('aria-pressed', st.playing ? 'true' : 'false')
@@ -2826,10 +2839,15 @@
     topArea.appendChild(accountEl)
     renderAccount()
 
-    // 当前视频详情（常驻顶部）：标题/信息可点击，在系统浏览器打开该视频
+    // 分隔线：把「账号」和「视频信息」明确分开（两者权重不同，不要挨成一片）
+    topArea.appendChild(el('div', 'dsbili-top-sep'))
+
+    // 当前视频详情（独立卡片，常驻顶部）：可点击，在系统浏览器打开该视频
     var now = el('div', 'dsbili-now dsbili-now-top')
+    nowLabelEl = el('div', 'dsbili-now-label', '未播放')
     titleEl = el('div', 'dsbili-now-title', '未播放')
     metaEl = el('div', 'dsbili-now-meta', '输入 BV 号开始')
+    now.appendChild(nowLabelEl)
     now.appendChild(titleEl)
     now.appendChild(metaEl)
     now.setAttribute('title', '点击在浏览器打开该视频')
