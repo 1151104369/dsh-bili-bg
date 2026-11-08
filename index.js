@@ -39,6 +39,7 @@ import { qrPng } from './lib/qr.js'
 import { createDownloader } from './lib/download.js'
 import { pickSavePath } from './lib/save-dialog.js'
 import { describeFfmpeg, installFfmpeg, getInstallState, cancelInstall } from './lib/ffmpeg.js'
+import { fetchDanmaku } from './lib/danmaku.js'
 import { BOOTSTRAP_GLOBAL, buildInjectionRows } from './lib/injections.js'
 
 export { BOOTSTRAP_GLOBAL, ROUTE_PREFIX }
@@ -49,7 +50,7 @@ export const name = 'dsh-bili-bg'
 export const inject = []
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.8.1'
+export const VERSION = '0.9.0'
 
 const CONFIG_ROUTE = `${ROUTE_PREFIX}/config.json`
 const PLAY_ROUTE = `${ROUTE_PREFIX}/play`
@@ -65,6 +66,7 @@ const DOWNLOADS_ROUTE = `${ROUTE_PREFIX}/downloads`
 const FFMPEG_ROUTE = `${ROUTE_PREFIX}/ffmpeg`
 const FFMPEG_INSTALL_ROUTE = `${ROUTE_PREFIX}/ffmpeg/install`
 const OPEN_ROUTE = `${ROUTE_PREFIX}/open`
+const DM_ROUTE = `${ROUTE_PREFIX}/dm`
 
 /** 已生成、尚未扫码/未过期的二维码内容（按 qrcode_key 索引，仅内存，随扫码/过期清理）。 */
 const pendingQrs = new Map()
@@ -238,6 +240,7 @@ export function apply(ctx) {
       install: FFMPEG_INSTALL_ROUTE,
     },
     open: OPEN_ROUTE,
+    dm: DM_ROUTE,
     defaults: {
       source: 'popular',
       count: 12,
@@ -312,10 +315,11 @@ export function apply(ctx) {
             })()
             const hd = url.searchParams.get('hd') === '1'
             const qn = parseInt(url.searchParams.get('qn') || '0', 10)
+            const pid = parseInt(url.searchParams.get('p') || '0', 10)
             const cookie = hd ? buildCookieHeader(homeDir) : ''
             const task = hd
-              ? resolveBvidHd(input, cookie, qn || undefined)
-              : resolveBvid(input)
+              ? resolveBvidHd(input, cookie, qn || undefined, pid || undefined)
+              : resolveBvid(input, pid || undefined)
             task
               .then((result) => {
                 // 直连本机 HTTP 时，把 mediaBase 挂到结果上（单文件 src 与 DASH 各轨的 media 都是相对路径）。
@@ -502,6 +506,7 @@ export function apply(ctx) {
                       : undefined
                   downloader
                     .startDownload(body.bvid.trim(), {
+                      pid: Number(body.pid) || undefined,
                       quality,
                       decide: async (info) => {
                         if (explicitDir && explicitName) return path.join(explicitDir, explicitName)
@@ -657,6 +662,27 @@ export function apply(ctx) {
             const target = `https://www.bilibili.com/video/${bvid}`
             const opened = openExternal(target)
             sendJson(res, opened ? 200 : 500, opened ? { ok: true, url: target } : { ok: false, error: '无法调起浏览器', url: target })
+          },
+        }),
+      )
+
+      // 弹幕：按 cid 拉取 gzip XML 并解析成前端可渲染的数组（带短时缓存）。
+      disposers.push(
+        child.webServer.register({
+          kind: 'exact',
+          path: DM_ROUTE,
+          handler: async (req, res) => {
+            const url = parseUrl(req)
+            const cid = String(url.searchParams.get('cid') || '').trim()
+            if (!cid || !/^\d+$/.test(cid)) {
+              sendJson(res, 400, { ok: false, error: '需要 cid 参数' })
+              return
+            }
+            try {
+              sendJson(res, 200, await fetchDanmaku(cid))
+            } catch (error) {
+              sendJson(res, 502, { ok: false, error: describe(error), list: [] })
+            }
           },
         }),
       )

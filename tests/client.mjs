@@ -848,6 +848,153 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
   hdApi.teardown()
 }
 
+// ── 计划第五项：分P / 纯氛围静音墙纸 / 弹幕（新功能冒烟） ──
+{
+  const doc = makeDocument()
+  const playCalls = []
+  const dmCalls = []
+  const downBodies = []
+  let lastState = null
+  function featFetch(url, opts) {
+    const u = String(url)
+    const method = opts && opts.method
+    let payload = {}
+    if (u.includes('/auth/status')) payload = { ok: true, loggedIn: true, account: { uname: 'F', mid: 9 } }
+    else if (u.includes('/state')) {
+      if (method === 'POST') {
+        try {
+          lastState = JSON.parse(String(opts.body || '{}'))
+        } catch {
+          lastState = {}
+        }
+        payload = { ok: true }
+      } else payload = { ok: true, state: {} }
+    } else if (u.includes('/download') && method === 'POST') {
+      try {
+        downBodies.push(JSON.parse(String(opts.body || '{}')))
+      } catch {
+        downBodies.push({})
+      }
+      payload = { ok: true, id: 'dl_p', task: { id: 'dl_p', status: 'downloading', received: 0, total: 100, height: 1080 } }
+    } else if (u.includes('/dm')) {
+      dmCalls.push(u)
+      payload = { ok: true, list: [{ t: 0, mode: 1, color: 16777215, text: '你好' }, { t: 2.5, mode: 5, color: 16711680, text: '顶弹幕' }] }
+    } else if (u.includes('/play')) {
+      playCalls.push(u)
+      const p = /[?&]p=(\d+)/i.exec(u)
+      const pid = p ? Number(p[1]) : 1
+      const cid = pid >= 2 ? 9002 : 9001
+      payload = {
+        ok: true,
+        bvid: 'BV1MP',
+        title: '多P视频',
+        cid,
+        duration: 60,
+        quality: 64,
+        owner: 'o',
+        pages: [
+          { page: 1, cid: 9001, part: '第一P', duration: 30 },
+          { page: 2, cid: 9002, part: '第二P', duration: 30 },
+        ],
+        src: '/dsh-bili/media?bvid=BV1MP&cid=' + cid,
+      }
+    }
+    return Promise.resolve({ json: () => Promise.resolve(payload) })
+  }
+  const win = {
+    document: doc,
+    fetch: featFetch,
+    setTimeout,
+    clearTimeout,
+    requestAnimationFrame: () => 1, // 测试环境不真正跑 RAF 循环，返回值非 0 即可
+    cancelAnimationFrame: () => 0,
+    MutationObserver: undefined,
+    console,
+    location: { search: '' },
+    __DSH_BILI_BG__: {
+      version: '0.9.0',
+      config: '/dsh-bili/config.json',
+      play: '/dsh-bili/play',
+      media: '/dsh-bili/media',
+      queue: '/dsh-bili/queue',
+      state: '/dsh-bili/state',
+      auth: { create: '/dsh-bili/auth/qr', image: '/dsh-bili/auth/qr', poll: '/dsh-bili/auth/poll', status: '/dsh-bili/auth/status', logout: '/dsh-bili/auth/logout' },
+      download: { create: '/dsh-bili/download', status: '/dsh-bili/download', list: '/dsh-bili/downloads' },
+      ffmpeg: { status: '/dsh-bili/ffmpeg', install: '/dsh-bili/ffmpeg/install' },
+      open: '/dsh-bili/open',
+      dm: '/dsh-bili/dm',
+      defaults: { source: 'popular', count: 12, volume: 0.8, veil: 0.32, veillight: 0.3 },
+    },
+  }
+  win.window = win
+  win.globalThis = win
+  const featRunner = new Function('window', 'document', 'fetch', 'setTimeout', 'clearTimeout', 'console', code + '\nreturn window.__DSH_BILI_BG_API__;')
+  const feat = featRunner(win, doc, featFetch, setTimeout, clearTimeout, console)
+  await new Promise((r) => setTimeout(r, 60))
+
+  function collectByClass(root, cls) {
+    const out = []
+    ;(function walk(n) {
+      if (!n) return
+      if (String(n.className || '').indexOf(cls) !== -1) out.push(n)
+      for (const c of n.children || []) walk(c)
+    })(root)
+    return out
+  }
+  function backdropOf() {
+    return findById(doc.body, 'dsbili-backdrop')
+  }
+
+  // ① 分P：加载多 P 视频后显示选择器，play 请求携带 &p=
+  feat.play('BV1MP')
+  await new Promise((r) => setTimeout(r, 80))
+  ok('multipage video loaded', !!feat.state.current && feat.state.current.bvid === 'BV1MP')
+  ok('pid defaults to 1', feat.state.pid === 1)
+  const pageBtns = collectByClass(doc.body, 'dsbili-page-btn')
+  ok('renders 2 page buttons for multipage video', pageBtns.length === 2, pageBtns.length)
+  ok('page 1 marked active by default', !!pageBtns[0] && pageBtns[0].getAttribute('data-on') === '1')
+  ok('play request carries p=1', playCalls.some((u) => /[?&]p=1/.test(u)), playCalls[playCalls.length - 1])
+
+  // ② 切到第二P：pid=2 + 重解析（换 cid），下载请求带 pid
+  pageBtns[1].click && pageBtns[1].click()
+  feat.state.pid = 2 // 模拟持久化后再开时从上次的 P 恢复
+  await new Promise((r) => setTimeout(r, 80))
+  feat.play('BV1MP')
+  await new Promise((r) => setTimeout(r, 60))
+  ok('switching page re-requests with p=2', playCalls.some((u) => /[?&]p=2/.test(u)), playCalls[playCalls.length - 1])
+  ok('page 2 active after switch', (() => {
+    const b = collectByClass(doc.body, 'dsbili-page-btn')
+    return !!b[1] && b[1].getAttribute('data-on') === '1'
+  })())
+  feat.download()
+  await new Promise((r) => setTimeout(r, 40))
+  ok('download body carries current pid', !!downBodies[0] && downBodies[0].pid === 2, downBodies[0])
+
+  // ③ 纯氛围静音墙纸：开关 + 静音锁定
+  ok('wallpaper off by default', feat.state.wallpaper === false)
+  feat.wallpaper()
+  ok('wallpaper toggled on', feat.state.wallpaper === true)
+  ok('wallpaper forces muted', feat.state.muted === true)
+  const vid = findById(doc.body, 'dsbili-video')
+  ok('wallpaper mutes the video element', !!vid && vid.muted === true, vid && vid.muted)
+  // ④ 弹幕：开启后按当前 cid 拉取
+  ok('danmaku off by default', feat.state.dm === false)
+  feat.danmaku()
+  await new Promise((r) => setTimeout(r, 80))
+  ok('danmaku toggled on', feat.state.dm === true)
+  ok('danmaku fetched for current cid', dmCalls.some((u) => u.indexOf('cid=9002') !== -1), dmCalls)
+  const dmCanvas = findById(doc.body, 'dsbili-danmaku')
+  ok('danmaku canvas present in backdrop', !!dmCanvas && !!backdropOf())
+
+  // ⑤ 分P/墙纸/弹幕都落盘
+  feat.wallpaper(); feat.danmaku() // 关掉，避免后台轮询；同时触发 persist
+  await new Promise((r) => setTimeout(r, 700)) // persist 有 500ms 去抖，等它真正 POST
+  ok('state persists pid', !!lastState && lastState.pid === 2, lastState)
+  ok('state persists wallpaper', !!lastState && lastState.wallpaper === false, lastState)
+
+  win.__DSH_BILI_BG_API__ && feat.teardown()
+}
+
 // 清理主 runtime 的轮询定时器，否则下载轮询会让测试进程无法退出。
 api.teardown()
 

@@ -56,6 +56,7 @@
         install: str(cfg.ffmpeg.install),
       }
     : null
+  ROUTES.dm = str(cfg.dm)
   ROUTES.open = str(cfg.open)
 
   // ────────────────────────────── 小工具 ──────────────────────────────
@@ -161,12 +162,29 @@
     dashAudioIndex: 0,
     // 当前视频去重后的清晰度列表（每个高度一条，已优选编码）。
     hdQualities: [],
+    // 当前分P（1-based）与该视频的分P列表（无分P时 pages=[]）。
+    pid: 1,
+    pages: [],
+    // 纯氛围静音墙纸模式：静音铺满、无感后台播放（音量相关按钮不顶格）。
+    wallpaper: false,
+    // 弹幕开关：在视频画面下方渲染一个滚动浮层（不影响播放，任何失败自动隐藏）。
+    dm: false,
   }
 
   // DOM
   var layer = null
   var video = null
   var veilEl = null
+  // 弹幕：canvas 浮层（在 video 之上、蒙版之下），随 currentTime 滚动。
+  var dmCanvas = null
+  var dmCtx = null
+  var dmList = null
+  var dmIndex = 0
+  var dmActive = []
+  var dmRaf = null
+  var dmLaneSeed = 0
+  var dmLastTime = 0
+  var dmLastFrame = 0
   var panel = null
   var launch = null
   var titleEl = null
@@ -185,6 +203,8 @@
   // 循环回开头后，等 seek 落地再 play（MSE 里 play 太早会被拒）。
   var seekPlayPending = false
   var focusBtn = null
+  var wallpaperBtn = null
+  var dmBtn = null
   var surfaceRange = null
   var surfaceVal = null
   var veilRange = null
@@ -201,6 +221,7 @@
   var rateButtons = []
   var progressRange = null
   var progressTime = null
+  var pageWrap = null
   var lastPlaybackPersist = 0
   var accountEl = null
   var qrOverlay = null
@@ -364,8 +385,17 @@
 
     veilEl = el('div')
     veilEl.id = 'dsbili-veil'
+    dmCanvas = el('canvas')
+    dmCanvas.id = 'dsbili-danmaku'
+    dmCanvas.setAttribute('aria-hidden', 'true')
+    try {
+      dmCtx = (dmCanvas.getContext && dmCanvas.getContext('2d')) || null
+    } catch (e) {
+      dmCtx = null
+    }
 
     layer.appendChild(video)
+    layer.appendChild(dmCanvas)
     layer.appendChild(veilEl)
     // append 到 body 末尾：同层负 z-index 中"后到者在上"，所以盖住装饰性循环背景。
     doc.body.appendChild(layer)
@@ -1237,6 +1267,7 @@
     }
     var autoPlay = !(opts && opts.autoPlay === false)
     var wantHd = opts && typeof opts.hd === 'boolean' ? opts.hd : st.hd === true
+    var pid = opts && Number(opts.pid) >= 1 ? Number(opts.pid) : (st.pid || 1)
     var query = str(input).trim()
     if (query === '') {
       setStatus('请先输入 BV 号或 bilibili 链接', 'error')
@@ -1247,6 +1278,7 @@
     syncButtons()
     var playUrl = ROUTES.play + '?bvid=' + encodeURIComponent(query)
     if (wantHd) playUrl += '&hd=1&qn=' + String(st.hdQuality)
+    playUrl += '&p=' + pid
     fetchJsonTimed(playUrl, { cache: 'no-store' }, 20000)
       .then(
         function (data) {
@@ -1260,6 +1292,11 @@
           }
           st.current = data
           st.failStreak = 0
+          // 换视频后分P数可能变小：pid 越界则回落到第一P。
+          if (Array.isArray(data.pages) && data.pages.length && st.pid > data.pages.length) st.pid = 1
+          syncPages()
+          // 开启弹幕时，换/载视频自动装载新 cid 的弹幕池。
+          if (st.dm && data.cid) startDanmaku(data.cid)
           st.duration = num(data.duration, 0, 0, 1e9)
           st.srcRel = data.src
           st.srcAbs = ''
@@ -1895,6 +1932,9 @@
       muted: st.muted,
       volume: st.volume,
       focusOff: st.focusOff,
+      wallpaper: st.wallpaper === true,
+      dm: st.dm === true,
+      pid: Math.floor(Number(st.pid) || 1),
       surface: st.surface,
       veil: st.veil,
       veilLight: st.veilLight,
@@ -1987,11 +2027,16 @@
         // 专注模式（隐藏画面）也是持久状态：上次退出时开着，重启后应当保持隐藏，
         // 而不是把画面直接亮出来。必须在 syncControls / 续播之前恢复。
         st.focusOff = s.focusOff === true
+        // 分P与纯氛围静音墙纸也是持久状态。
+        st.pid = Math.max(1, Math.floor(Number(s.pid) || 1))
+        st.wallpaper = s.wallpaper === true
+        st.dm = s.dm === true
         if (s.launcher) applyLauncherPos(s.launcher)
         if (s.panelPos) applyPanelPos(s.panelPos)
         if (typeof s.tab === 'string' && panelSetTab) panelSetTab(s.tab)
         if (s.bvid && inputEl) inputEl.value = s.bvid
         syncControls()
+        applyWallpaper()
         applyVeil()
         // 来源策略可能依赖登录态（已登录默认首页推荐），两者都就绪后再定一次。
         applyDefaultSource()
@@ -2351,7 +2396,7 @@
     fetchJson(ROUTES.download.create, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bvid: st.current.bvid, quality: quality }),
+      body: JSON.stringify({ bvid: st.current.bvid, pid: st.pid || 1, quality: quality }),
     }).then(
       function (data) {
         if (!data || data.ok !== true) {
@@ -2470,6 +2515,14 @@
     if (focusBtn !== null) {
       focusBtn.textContent = st.focusOff ? '☀ 恢复显示' : '🌙 专注隐藏'
       focusBtn.setAttribute('data-on', st.focusOff ? '1' : '0')
+    }
+    if (wallpaperBtn !== null) {
+      wallpaperBtn.textContent = st.wallpaper ? '🖼 静音墙纸:开' : '🖼 静音墙纸'
+      wallpaperBtn.setAttribute('data-on', st.wallpaper ? '1' : '0')
+    }
+    if (dmBtn !== null) {
+      dmBtn.textContent = st.dm ? '💬 弹幕:开' : '💬 弹幕'
+      dmBtn.setAttribute('data-on', st.dm ? '1' : '0')
     }
     if (prevBtn !== null) prevBtn.disabled = st.busy
     if (nextBtn !== null) nextBtn.disabled = st.busy
@@ -2609,6 +2662,277 @@
       })
     }
     setStatus(st.carousel ? '列表连播：开启（放完自动播列表下一支）' : '列表连播：关闭', '')
+    syncButtons()
+    persist()
+  }
+
+  /** 纯氛围静音墙纸模式：静音 + 悬浮胶囊收起，做无感后台播放。 */
+  function applyWallpaper() {
+    if (video !== null) {
+      try {
+        // 墙纸模式下锁定静音；退出后回到用户自己的 mute 偏好。
+        video.muted = st.wallpaper ? true : st.muted === true
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    if (st.wallpaper && launch !== null && st.expanded) {
+      setExpanded(false)
+    }
+  }
+  function toggleWallpaper() {
+    st.wallpaper = !st.wallpaper
+    if (st.wallpaper) {
+      st.muted = true // 默认静音，免得突然出声
+      if (video !== null) {
+        try {
+          video.muted = true
+        } catch (e) {
+          /* ignore */
+        }
+      }
+      setStatus('纯氛围静音墙纸：已开启（静音后台播放）', 'ok')
+    } else {
+      applyWallpaper()
+      setStatus('已退出纯氛围静音墙纸模式', '')
+    }
+    applyWallpaper()
+    syncButtons()
+    persist()
+  }
+
+  /** 渲染分P选择器：只有多 P 视频才显示；单 P / 无分P时隐藏。 */
+  function syncPages() {
+    if (pageWrap === null) return
+    var pages = st.current && Array.isArray(st.current.pages) && st.current.pages.length ? st.current.pages : []
+    while (pageWrap.children && pageWrap.children.length) pageWrap.removeChild(pageWrap.children[0])
+    if (pages.length <= 1) {
+      pageWrap.setAttribute('hidden', '')
+      st.pages = []
+      return
+    }
+    st.pages = pages
+    pageWrap.removeAttribute('hidden')
+    var head = el('span', 'dsbili-rowhead-span', '分P')
+    pageWrap.appendChild(head)
+    for (var i = 0; i < pages.length; i += 1) {
+      ;(function (pageIdx) {
+        var p = pages[pageIdx]
+        var label = String(pageIdx + 1)
+        var btn = el('button', 'dsbili-btn dsbili-page-btn', label)
+        btn.setAttribute('data-page', String(pageIdx + 1))
+        btn.setAttribute('title', 'P' + (pageIdx + 1) + (p && p.part ? ' · ' + p.part : ''))
+        btn.setAttribute('data-on', st.pid === pageIdx + 1 ? '1' : '0')
+        btn.addEventListener('click', function () {
+          if (st.current === null) return
+          var pid = pageIdx + 1
+          if (pid === st.pid) return
+          st.pid = pid
+          st.pendingSeek = 0 // 换 P = 换内容，从头播
+          loadAndPlay(st.current.bvid || '', { pid: pid, hd: st.hd === true })
+          syncPages()
+          persist()
+        })
+        pageWrap.appendChild(btn)
+      })(i)
+    }
+  }
+
+  // ────────────────────────────── 弹幕渲染 ──────────────────────────────
+  // 背景氛围用的滚动弹幕：canvas 浮层夹在 video 与蒙版之间，随 currentTime 出现、
+  // 从右往左滚动。任何一步失败（无 canvas / 接口失败）都自动停掉，绝不影响播放。
+
+  function dmResize() {
+    if (dmCanvas === null) return
+    try {
+      var w = layer ? layer.clientWidth : 0
+      var h = layer ? layer.clientHeight : 0
+      if (!w) w = global.innerWidth || 0
+      if (!h) h = global.innerHeight || 0
+      if (dmCanvas.width !== w) dmCanvas.width = w
+      if (dmCanvas.height !== h) dmCanvas.height = h
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  function dmColorOf(c) {
+    var n = Number(c)
+    if (!isFinite(n) || n <= 0) return '#ffffff'
+    var s = n.toString(16)
+    while (s.length < 6) s = '0' + s
+    return '#' + s.slice(-6)
+  }
+
+  /** 拉取并装载某支视频（cid）的弹幕池。 */
+  function startDanmaku(cid) {
+    stopDanmaku()
+    if (!ROUTES.dm) return
+    if (!st.dm || !cid) return
+    dmResize()
+    fetchJson(ROUTES.dm + '?cid=' + encodeURIComponent(String(cid)), { cache: 'no-store' }).then(
+      function (data) {
+        if (!st.dm || dmCanvas === null) return
+        if (!data || data.ok !== true) {
+          setStatus((data && data.error) || '弹幕获取失败，已隐藏', 'error')
+          return
+        }
+        dmList = Array.isArray(data.list) ? data.list : []
+        dmIndex = 0
+        dmActive = []
+        dmLastTime = 0
+        dmLaneSeed = 0
+        if (dmList.length && dmRaf === null) startDmLoop()
+      },
+      noop,
+    )
+  }
+
+  function stopDanmaku() {
+    if (dmRaf !== null) {
+      try {
+        global.cancelAnimationFrame(dmRaf)
+      } catch (e) {
+        /* ignore */
+      }
+      dmRaf = null
+    }
+    dmActive = []
+    dmList = null
+    if (dmCtx !== null && dmCanvas !== null) {
+      try {
+        dmCtx.clearRect(0, 0, dmCanvas.width, dmCanvas.height)
+      } catch (e) {
+        /* ignore */
+      }
+    }
+  }
+
+  function dmAlive() {
+    return st.dm === true && dmCanvas !== null && dmCtx !== null && dmList !== null && video !== null
+  }
+
+  function startDmLoop() {
+    if (dmRaf !== null) return
+    var loop = function () {
+      dmRaf = null
+      if (!dmAlive()) return
+      tickDanmaku()
+      renderDanmaku()
+      dmRaf = global.requestAnimationFrame(loop)
+    }
+    dmRaf = global.requestAnimationFrame(loop)
+  }
+
+  function tickDanmaku() {
+    var now = 0
+    try {
+      now = isFinite(video.currentTime) ? video.currentTime : 0
+    } catch (e) {
+      return
+    }
+    // 前后大幅跳变（seek / 换P / 重启续播）时退回到当前时间重排，别一堆旧弹幕扎堆。
+    if (Math.abs(now - dmLastTime) > 3) rewindDanmaku(now)
+    else spawnDue(now)
+    dmLastTime = now
+  }
+
+  function rewindDanmaku(now) {
+    dmActive = []
+    var i = 0
+    while (i < dmList.length && dmList[i].t < now) i += 1
+    dmIndex = i
+    var budget = 0
+    while (i < dmList.length && dmList[i].t <= now + 0.4 && budget < 8) {
+      spawnDm(dmList[i])
+      i += 1
+      budget += 1
+    }
+    dmIndex = i
+  }
+
+  function spawnDue(now) {
+    var n = 0
+    while (dmIndex < dmList.length && dmList[dmIndex].t <= now + 0.15) {
+      var d = dmList[dmIndex]
+      dmIndex += 1
+      if (d.t >= now - 0.15) {
+        spawnDm(d)
+        n += 1
+        if (n > 24) break // 一帧别爆发太多
+      }
+    }
+  }
+
+  function spawnDm(d) {
+    if (dmCanvas === null) return
+    var w = dmCanvas.width
+    var h = dmCanvas.height
+    if (w <= 0 || h <= 0) return
+    var text = String(d.text || '').trim()
+    if (!text) return
+    var color = dmColorOf(d.color)
+    var fontSize = Math.max(18, Math.round(h * 0.05))
+    // 顶栏(5)/底栏(6)：固定位置停留一小段；普通滚动(1/4)从右往左匀速。
+    if (d.mode === 5 || d.mode === 6) {
+      var topY = d.mode === 5 ? fontSize + 6 : h - fontSize - 12
+      dmActive.push({ fixed: true, x: 0, y: topY, text: text, color: color, size: fontSize, born: Date.now() })
+      return
+    }
+    var laneCount = Math.max(1, Math.floor((h - 20) / (fontSize + 8)))
+    var lane = (dmLaneSeed = (dmLaneSeed + 1) % laneCount)
+    dmActive.push({
+      x: w,
+      y: 8 + lane * (fontSize + 8) + fontSize / 2,
+      speed: Math.max(60, w / 8),
+      text: text,
+      color: color,
+      size: fontSize,
+    })
+  }
+
+  function renderDanmaku() {
+    if (dmCtx === null || dmCanvas === null) return
+    var w = dmCanvas.width
+    var h = dmCanvas.height
+    dmCtx.clearRect(0, 0, w, h)
+    var now = Date.now()
+    var dt = (now - (dmLastFrame || now)) / 1000
+    dmLastFrame = now
+    if (!(dt >= 0)) dt = 0
+    if (dt > 0.05) dt = 0.05
+    dmCtx.textBaseline = 'middle'
+    dmCtx.shadowColor = 'rgba(0,0,0,0.75)'
+    dmCtx.shadowBlur = 4
+    var next = []
+    for (var i = 0; i < dmActive.length; i += 1) {
+      var d = dmActive[i]
+      if (d.fixed) {
+        if (now - d.born > 4000) continue
+      } else {
+        d.x -= d.speed * dt
+        dmCtx.font = '600 ' + d.size + 'px sans-serif'
+        var textW = dmCtx.measureText(d.text).width
+        if (d.x + textW < 0) continue
+      }
+      dmCtx.font = '600 ' + d.size + 'px sans-serif'
+      dmCtx.fillStyle = d.color
+      dmCtx.fillText(d.text, d.fixed ? 6 : d.x, d.y)
+      next.push(d)
+    }
+    dmActive = next
+  }
+
+  function toggleDanmaku() {
+    st.dm = !st.dm
+    if (st.dm) {
+      var cid = st.current && st.current.cid ? st.current.cid : ''
+      if (cid) startDanmaku(cid)
+      else setStatus('弹幕已开启；加载视频后显示', 'ok')
+    } else {
+      stopDanmaku()
+      setStatus('弹幕已关闭', '')
+    }
     syncButtons()
     persist()
   }
@@ -2985,8 +3309,21 @@
     hdRow.appendChild(hdHead)
     hdRow.appendChild(hdBtn)
     qualityWrap = el('div', 'dsbili-hd-quality')
+    // 分P选择器：多 P 视频才显示（syncPages 里控制 hidden）。
+    pageWrap = el('div', 'dsbili-pages')
+    pane('play').appendChild(pageWrap)
     pane('play').appendChild(hdRow)
     pane('play').appendChild(qualityWrap)
+
+    // 弹幕开关（播放标签页，紧挨清晰度区域）。
+    var dmRow = el('div', 'dsbili-btnrow')
+    dmBtn = el('button', 'dsbili-btn', '💬 弹幕')
+    dmBtn.id = 'dsbili-dm-btn'
+    dmBtn.setAttribute('title', '在视频上渲染滚动弹幕（随播放进度滚动，可随时开关）')
+    dmBtn.setAttribute('data-on', st.dm ? '1' : '0')
+    dmBtn.addEventListener('click', toggleDanmaku)
+    dmRow.appendChild(dmBtn)
+    pane('play').appendChild(dmRow)
     syncQuality()
 
     // 下载当前视频：宿主有 download 路由才可用，否则按钮禁用（清晰回退）。
@@ -3065,6 +3402,12 @@
     settingsClearBtn.id = 'dsbili-settings-clear'
     settingsClearBtn.addEventListener('click', toggleClear)
     focusRow.appendChild(settingsClearBtn)
+    wallpaperBtn = el('button', 'dsbili-btn', '🖼 静音墙纸')
+    wallpaperBtn.id = 'dsbili-wallpaper-btn'
+    wallpaperBtn.setAttribute('title', '纯氛围静音墙纸：静音 + 悬浮胶囊收起，做无感后台播放')
+    wallpaperBtn.setAttribute('data-on', st.wallpaper ? '1' : '0')
+    wallpaperBtn.addEventListener('click', toggleWallpaper)
+    focusRow.appendChild(wallpaperBtn)
     pane('settings').appendChild(focusRow)
 
     // 倍速
@@ -3325,6 +3668,17 @@
     } catch (e) {
       /* ignore */
     }
+    // 弹幕 canvas 跟随窗口尺寸。
+    try {
+      global.addEventListener('resize', function () {
+        if (dmCanvas !== null) {
+          dmResize()
+          dmLastFrame = 0 // 避免 resize 后一帧按大 dt 跳
+        }
+      })
+    } catch (e) {
+      /* ignore */
+    }
     global.__DSH_BILI_BG_API__ = {
       state: st,
       play: loadAndPlay,
@@ -3333,6 +3687,8 @@
       prev: prev,
       clear: toggleClear,
       focus: toggleFocus,
+      wallpaper: toggleWallpaper,
+      danmaku: toggleDanmaku,
       loop: toggleLoop,
       carousel: toggleCarousel,
       // 供自动化/排障：统一走当前模式的 seek（高清 → MSE 播放器；否则 media element）
@@ -3370,6 +3726,7 @@
         stopDownloadPoll()
         stopFfmpegPoll()
         stopWarmSingleFile()
+        stopDanmaku()
         destroyDash()
         hideLayer()
         if (layer && layer.parentNode) layer.parentNode.removeChild(layer)

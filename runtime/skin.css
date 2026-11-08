@@ -82,6 +82,15 @@ html[data-dsbili-clear="on"] [class*="centerCol"] {
   background: rgba(0, 0, 0, var(--dsbili-veil, 0.32));
 }
 
+/* 弹幕浮层：盖在 <video> 之上、蒙版之下，铺满背景层，不拦鼠标。 */
+#dsbili-danmaku {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
 body:not([data-ds-dark-theme]) #dsbili-veil {
   background: rgba(255, 255, 255, var(--dsbili-veil-light, 0.3));
 }
@@ -487,6 +496,29 @@ body:not([data-ds-dark-theme]) .dsbili-btn[data-on="1"] {
 .dsbili-btnrow > .dsbili-btn {
   flex: 1;
   text-align: center;
+}
+
+/* 分P选择器：多 P 视频时显示，成排小按钮滚动 */
+.dsbili-pages {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  max-height: 64px;
+  overflow-y: auto;
+}
+.dsbili-pages[hidden] {
+  display: none;
+}
+.dsbili-pages .dsbili-rowhead-span {
+  font-size: 12px;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+.dsbili-pages .dsbili-btn {
+  min-width: 30px;
+  padding: 4px 8px;
 }
 
 /* 当前标题 */

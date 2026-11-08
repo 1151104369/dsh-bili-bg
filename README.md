@@ -74,6 +74,9 @@
     卡到 20s 超时；直连 mediaBase 6s 无响应会自动改用同源相对地址。
   - 未登录开高清会提示「需登录」；服务端拿不到分轨也会自动回退并明确告知。
 - 快捷键 `Ctrl+Shift+B` 开关面板
+- **分P**：多 P 视频在播放页显示分P选择器，点某 P 即切（换 cid 重解析，从头播）；当前分P会记到状态文件，重启后恢复；下载也跟随当前 P
+- **弹幕**：`💬 弹幕` 开关，在视频上渲染一段随播放进度滚动的氛围弹幕（canvas 浮层，夹在画面与蒙版之间；获取/渲染任何失败自动隐藏，绝不干扰播放）
+- **纯氛围静音墙纸**：设置页 `🖼 静音墙纸` 一键切到「静音 + 悬浮胶囊收起」的无感后台播放，重启后保持
 
 ## 接入方式
 
@@ -98,7 +101,8 @@ lib/download.js     视频下载：按播放画质取源、流式写 .part、并
 lib/ffmpeg.js       ffmpeg 探测 / 一键下载（npmmirror 平台包 tgz，内置最小 tar 解析）
 lib/save-dialog.js  Windows「另存为」对话框（PowerShell + WinForms，零依赖）
 lib/injections.js   webserver/index-inject 结构化注入行
-runtime/skin.js     浏览器端：背景层 + 悬浮胶囊 + 控制面板 + 账号区 + 进度/倍速/清屏 + 高清开关
+lib/danmaku.js      弹幕获取：按 cid 拉 gzip/deflate 压缩 XML 并解析成前端可渲染数组（宿主侧）
+runtime/skin.js     浏览器端：背景层 + 悬浮胶囊 + 控制面板 + 账号区 + 进度/倍速/清屏 + 高清开关 + 分P + 弹幕 + 静音墙纸
 runtime/dash.js     浏览器端 MSE DASH 播放器：init-先+mof 索引 seek+两轨对称回收+降级回退（独立模块）
 runtime/skin.css    样式
 tests/smoke.mjs     宿主冒烟（临时 DSH_HOME，不碰真实状态）
@@ -144,7 +148,10 @@ tests/mse.mjs       MSE 播放器单测（ISO-BMFF 解析 + 装配/回退）
 2. **✅ 账号首页 / 推荐列表**：登录后取首页推荐 feed（wbi 签名）
 3. **✅ 视频下载**：另存为对话框、进度/速度、中途取消（0.2.0）
 4. **✅ 登录后高画质**：带 Cookie 请求 playurl(DASH) + 双轨 MSE 混流 + 画质降级开关（本阶段完成）
-5. 4K / 杜比、自适应码率（ABR）、弹幕、分 P / 合集、纯氛围静音墙纸模式
+5. **✅ 分 P**：多 P 选择器 + 切换与持久化（0.9.0）
+6. **✅ 弹幕**：宿主取弹幕 XML + 前端 canvas 氛围浮层（0.9.0）
+7. **✅ 纯氛围静音墙纸模式**（0.9.0）
+8. 4K / 杜比、自适应码率（ABR）、合集
 
 ## 开发
 
