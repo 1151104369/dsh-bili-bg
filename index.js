@@ -50,7 +50,7 @@ export const name = 'dsh-bili-bg'
 export const inject = []
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.10.0'
+export const VERSION = '0.10.1'
 
 const CONFIG_ROUTE = `${ROUTE_PREFIX}/config.json`
 const PLAY_ROUTE = `${ROUTE_PREFIX}/play`
@@ -446,8 +446,11 @@ export function apply(ctx) {
             const url = parseUrl(req)
             const source = url.searchParams.get('source') || 'popular'
             const count = url.searchParams.get('count') || '12'
-            const cookie = source === 'feed' ? buildCookieHeader(homeDir) : ''
-            fetchQueue(source, count, cookie)
+            const order = url.searchParams.get('order') || ''
+            // 舞蹈UP主来源可按最新/最热排序；feed 需要登录态 Cookie。
+            const cookie =
+              source === 'feed' || source === 'danceup' ? buildCookieHeader(homeDir) : ''
+            fetchQueue(source, count, cookie, order)
               .then((result) => sendJson(res, 200, { ok: true, ...result }))
               .catch((error) => sendJson(res, 502, { ok: false, error: describe(error) }))
           },

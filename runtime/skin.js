@@ -112,6 +112,8 @@
     muted: false,
     volume: num(d.volume, 0.8, 0, 1),
     source: d.source === 'ranking' ? 'ranking' : 'popular',
+    // 舞蹈UP主来源排序：pubdate=最新发布（默认），click=最热。
+    danceupSort: 'pubdate',
     count: num(d.count, 12, 1, 30),
     carousel: false,
     // 单曲循环：两种模式都支持；轮播开启时轮播优先（放完切下一支）。
@@ -230,6 +232,7 @@
   var srcRanking = null
   var srcDance = null
   var srcDanceUp = null
+  var srcDanceUpSort = null
   var fitBtn = null
   var bgBtn = null
   var miniPlayBtn = null
@@ -403,6 +406,12 @@
     video.setAttribute('muted', '')
     video.setAttribute('aria-hidden', 'true')
     video.setAttribute('data-fit', st.fit === 'cover' ? 'cover' : 'width')
+    // 音量必须显式从持久化状态写回：<video> 默认 volume=1，不写就会「重启后变最大音量」。
+    try {
+      video.volume = clamp01(st.volume)
+    } catch (e) {
+      /* ignore */
+    }
 
     veilEl = el('div')
     veilEl.id = 'dsbili-veil'
@@ -567,6 +576,12 @@
     if (video === null) return
     var want = withAudio === true
     video.muted = !want
+    // 每次起播都对齐持久化音量（避免浏览器默认 volume=1，重启后突然最大声）。
+    try {
+      video.volume = clamp01(st.volume)
+    } catch (e) {
+      /* ignore */
+    }
     var played
     try {
       played = video.play()
@@ -1903,7 +1918,15 @@
               ? '首页推荐'
               : '热门'
     setStatus('加载' + label + '…', '')
-    return fetchJson(ROUTES.queue + '?source=' + st.source + '&count=' + st.count, { cache: 'no-store' }).then(
+    return fetchJson(
+      ROUTES.queue +
+        '?source=' +
+        st.source +
+        '&count=' +
+        st.count +
+        (st.source === 'danceup' ? '&order=' + (st.danceupSort === 'click' ? 'click' : 'pubdate') : ''),
+      { cache: 'no-store' },
+    ).then(
       function (data) {
         st.queueBusy = false
         if (!data || data.ok !== true) {
@@ -2003,6 +2026,7 @@
     }
     return {
       source: st.source,
+      danceupSort: st.danceupSort === 'click' ? 'click' : 'pubdate',
       sourcePicked: st.sourcePicked === true,
       count: st.count,
       carousel: st.carousel,
@@ -2088,6 +2112,7 @@
         var s = data && data.state
         if (!isObj(s)) return
         st.source = s.source === 'ranking' || s.source === 'dance' || s.source === 'danceup' || s.source === 'feed' ? s.source : st.source
+        st.danceupSort = s.danceupSort === 'click' ? 'click' : 'pubdate'
         st.sourcePicked = s.sourcePicked === true
         st.count = num(s.count, st.count, 1, 30)
         st.carousel = s.carousel === true
@@ -2617,6 +2642,10 @@
     if (srcRanking !== null) srcRanking.setAttribute('aria-pressed', st.source === 'ranking' ? 'true' : 'false')
     if (srcDance !== null) srcDance.setAttribute('aria-pressed', st.source === 'dance' ? 'true' : 'false')
     if (srcDanceUp !== null) srcDanceUp.setAttribute('aria-pressed', st.source === 'danceup' ? 'true' : 'false')
+    if (srcDanceUpSort !== null) {
+      srcDanceUpSort.textContent = st.danceupSort === 'click' ? '排序: 最热' : '排序: 最新'
+      srcDanceUpSort.setAttribute('data-on', st.danceupSort === 'click' ? '1' : '0')
+    }
     if (srcFeed !== null) srcFeed.setAttribute('aria-pressed', st.source === 'feed' ? 'true' : 'false')
     if (surfaceVal !== null) surfaceVal.textContent = Math.round(st.surface * 100) + '%'
     if (veilVal !== null) veilVal.textContent = Math.round(st.veil * 100) + '%'
@@ -3717,6 +3746,16 @@
     var row4b = el('div', 'dsbili-btnrow')
     row4b.appendChild(srcDance)
     row4b.appendChild(srcDanceUp)
+    // 舞蹈UP主排序：最新发布（默认）/ 最热
+    srcDanceUpSort = el('button', 'dsbili-btn', '排序: 最新')
+    srcDanceUpSort.setAttribute('title', '舞蹈UP主排序：最新发布 / 最热（按点击）')
+    srcDanceUpSort.addEventListener('click', function () {
+      st.danceupSort = st.danceupSort === 'click' ? 'pubdate' : 'click'
+      syncButtons()
+      if (st.source === 'danceup') loadQueue()
+      persist()
+    })
+    row4b.appendChild(srcDanceUpSort)
 
     // 音量（和进度条一样是滑动条，紧挨着放在进度下面）；静音按钮只留喇叭图标，放本行右侧
     var volRow = el('div', 'dsbili-row')

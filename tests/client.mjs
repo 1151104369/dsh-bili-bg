@@ -548,6 +548,8 @@ function recoverFetch(url, opts) {
               source: 'popular',
               sourcePicked: true,
               resume: true,
+              // 音量也要跨重启恢复（曾出现重启后变最大音量）
+              volume: 0.35,
             },
           }
   } else if (u.includes('/play')) {
@@ -592,6 +594,7 @@ const recoverVideo = findById(recoverDoc.body, 'dsbili-video')
 ok('restores last video after restart even when paused', !!recoverApi.state.current && recoverApi.state.current.bvid === 'BV1GJ411x7h7', recoverApi.state.current && recoverApi.state.current.bvid)
 ok('restored video loads its src', !!recoverVideo && String(recoverVideo.src).includes('BV1GJ411x7h7'))
 ok('restored video stays paused (not autoplayed)', !!recoverVideo && recoverVideo.paused === true && recoverApi.state.playing === false)
+ok('restored volume applied to video element', !!recoverVideo && Math.abs(recoverVideo.volume - 0.35) < 0.001, recoverVideo && recoverVideo.volume)
 ok('restored video records resume position', recoverApi.state.pendingSeek === null || recoverApi.state.pendingSeek === 42)
 // 专注模式重启恢复：状态保持 + 背景层仍是隐藏的（data-idle=1），不会把画面亮出来
 ok('focus mode restored after restart', recoverApi.state.focusOff === true)
@@ -1080,6 +1083,12 @@ recoverApi.teardown() // 清掉结尾看门狗等定时器，避免测试进程�
   if (danceUpBtn) {
     danceUpBtn.emit('click')
     ok('danceup source selected after click', api.state.source === 'danceup')
+  }
+  const sortBtn = allBtns.find((b) => String(b.textContent).indexOf('排序:') === 0)
+  ok('danceup sort toggle exists (defaults to latest)', !!sortBtn && String(sortBtn.textContent) === '排序: 最新')
+  if (sortBtn) {
+    sortBtn.emit('click')
+    ok('danceup sort toggles to click/hottest', api.state.danceupSort === 'click')
   }
 }
 
