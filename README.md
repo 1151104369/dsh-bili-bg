@@ -129,7 +129,8 @@ tests/mse.mjs       MSE 播放器单测（ISO-BMFF 解析 + 装配/回退）
 - 高清诊断：最近一次 MSE 状态/回退原因会写进 `state.hdDiag`（重启/排障可看）。
 - 播放流经本地代理（带 `Referer` + `Range`）。Electron 的 `dsh-app://` 转发层会丢掉 `Content-Length`，会让 `<video>` 无法 seek，所以客户端优先**直连本机 HTTP**、失败再回退代理；MSE 取分轨也是直连 + 断线回退同源代理。
 - 清屏依赖 `dsh-client-ui-layout` 的类名（匹配 `[class*="centerCol"]` / `[class*="sidebarCol"]`）。
-- 仅面向 desktop profile（Electron 桌面壳）。
+- 最初面向 desktop profile（Electron 桌面壳）；**Web 模式也可用**：点「视频信息卡片」在 Web 下用当前浏览器新标签打开，
+  桌面壳下则由宿主调起系统浏览器（`/open` 路由）。
 - **窗口大小不归本插件管**：DSH 桌面壳把主窗口尺寸硬编码在 `createWindow()`，且插件拿不到窗口控制
   （preload 沙箱 + IPC 白名单）。要做只能改 DSH 本体或加系统级工具，都不属于插件层，故不做。
 

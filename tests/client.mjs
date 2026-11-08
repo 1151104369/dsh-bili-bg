@@ -135,6 +135,7 @@ function makeDocument() {
 const document = makeDocument()
 // 记录 POST /download 的 body，用来断言「按当前播放画质下载」请求字段。
 const downloadBodies = []
+const openedUrls = []
 let ffmpegInstallCalls = 0
 const openCalls = []
 
@@ -214,6 +215,11 @@ const window = {
     clearInterval,
   console,
   location: { search: '' },
+  navigator: { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0 Safari/537.36' },
+  open: function (url) {
+    openedUrls.push(String(url))
+    return {}
+  },
   __DSH_BILI_BG__: {
     version: '0.1.0',
     config: '/dsh-bili/config.json',
@@ -376,9 +382,18 @@ ok('video detail card has playing label', !!nowLabelEl && String(nowLabelEl.text
 const nowTop = findByClass(document.body, 'dsbili-now-top')
 ok('video detail is clickable (title hint)', !!nowTop && String(nowTop.getAttribute('title')).includes('浏览器'))
 openCalls.length = 0
+openedUrls.length = 0
 api.openVideo()
 await new Promise((r) => setTimeout(r, 40))
-ok('open video hits host open route', openCalls.length === 1 && openCalls[0].includes('/dsh-bili/open?bvid='), openCalls)
+ok('web mode opens via browser window.open (not host route)', openedUrls.length === 1 && openCalls.length === 0, openedUrls)
+// 桌面壳(Electron UA)仍走宿主 /open 打开系统浏览器
+window.navigator.userAgent = 'Mozilla/5.0 (Windows NT 10.0) Electron/28.0.0 Chrome/120 Safari/537.36'
+openCalls.length = 0
+openedUrls.length = 0
+api.openVideo()
+await new Promise((r) => setTimeout(r, 40))
+ok('desktop(electron) opens via host open route', openCalls.length === 1 && openCalls[0].includes('/dsh-bili/open?bvid='), openCalls)
+window.navigator.userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0 Safari/537.36'
 
 // 分类正确：音量在「播放」；界面不透明度/蒙版在「设置」；来源切换与列表在「列表」
 const playPane = paneOf('play')
@@ -1088,6 +1103,18 @@ recoverApi.teardown() // 清掉结尾看门狗等定时器，避免测试进程�
     sortSel.value = 'click'
     sortSel.emit('change')
     ok('danceup sort switch to most-played', api.state.danceupSort === 'click')
+  }
+
+  // Web 模式（非 Electron）：点信息卡片应在点击手势内同步用浏览器新标签打开，
+  // 不能放到 fetch 回调里（会被弹窗拦截 → 表现为点了没反应）。
+  if (api.openVideo && api.state.current && api.state.current.bvid) {
+    openedUrls.length = 0
+    api.openVideo()
+    ok(
+      'web mode opens video card in browser tab synchronously',
+      openedUrls.some((u) => u.indexOf('/video/' + api.state.current.bvid) !== -1),
+      openedUrls[openedUrls.length - 1],
+    )
   }
 }
 

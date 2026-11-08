@@ -1879,25 +1879,51 @@
       return
     }
     var url = 'https://www.bilibili.com/video/' + encodeURIComponent(bvid)
+    // 桌面壳(Electron)用宿主打开系统浏览器；Web 模式用页面自身浏览器开新标签。
+    // 注意：window.open 必须在点击手势内**同步**调用，放到 fetch 回调里会被弹窗拦截，
+    // 这也是 web 模式点卡片「没反应」的原因。
+    var isElectron = false
+    try {
+      isElectron = /electron/i.test(String((global.navigator && global.navigator.userAgent) || ''))
+    } catch (e) {
+      isElectron = false
+    }
+    if (!isElectron) {
+      var opened = null
+      try {
+        opened = global.open(url, '_blank')
+      } catch (e) {
+        opened = null
+      }
+      if (opened) {
+        setStatus('已在浏览器打开该视频', 'ok')
+        return
+      }
+    }
+    var fallback = function () {
+      try {
+        if (global.open(url, '_blank')) return
+      } catch (e) {
+        /* ignore */
+      }
+      setStatus('打不开浏览器，可手动访问：' + url, 'error')
+    }
     if (ROUTES.open) {
       fetchJson(ROUTES.open + '?bvid=' + encodeURIComponent(bvid), { cache: 'no-store' }).then(
-        function () {},
-        function () {
-          // 宿主打不开就退浏览器 window.open
-          try {
-            global.open(url, '_blank')
-          } catch (e) {
-            setStatus('打不开浏览器：' + url, 'error')
+        function (data) {
+          if (data && data.ok === true) {
+            setStatus('已在系统浏览器打开该视频', 'ok')
+            return
           }
+          fallback()
+        },
+        function () {
+          fallback()
         },
       )
       return
     }
-    try {
-      global.open(url, '_blank')
-    } catch (e) {
-      setStatus('打不开浏览器：' + url, 'error')
-    }
+    fallback()
   }
 
   // ────────────────────────────── 队列 ──────────────────────────────
