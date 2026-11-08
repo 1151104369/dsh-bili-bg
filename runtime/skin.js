@@ -112,7 +112,7 @@
     muted: false,
     volume: num(d.volume, 0.8, 0, 1),
     source: d.source === 'ranking' ? 'ranking' : 'popular',
-    // 舞蹈UP主来源排序：pubdate=最新发布（默认），click=最热。
+    // 宅舞区来源排序：totalrank/click/pubdate/dm/stow（对齐 B 站搜索排序），默认 pubdate。
     danceupSort: 'pubdate',
     count: num(d.count, 12, 1, 30),
     carousel: false,
@@ -230,7 +230,6 @@
   var veilVal = null
   var srcPopular = null
   var srcRanking = null
-  var srcDance = null
   var srcDanceUp = null
   var srcDanceUpSort = null
   var fitBtn = null
@@ -1910,13 +1909,11 @@
     var label =
       st.source === 'ranking'
         ? '排行榜'
-        : st.source === 'dance'
-          ? '舞蹈区'
-          : st.source === 'danceup'
-            ? '舞蹈UP主'
-            : st.source === 'feed'
-              ? '首页推荐'
-              : '热门'
+        : st.source === 'danceup'
+          ? '宅舞区'
+          : st.source === 'feed'
+            ? '首页推荐'
+            : '热门'
     setStatus('加载' + label + '…', '')
     return fetchJson(
       ROUTES.queue +
@@ -1924,7 +1921,7 @@
         st.source +
         '&count=' +
         st.count +
-        (st.source === 'danceup' ? '&order=' + (st.danceupSort === 'click' ? 'click' : 'pubdate') : ''),
+        (st.source === 'danceup' ? '&order=' + encodeURIComponent(st.danceupSort || 'pubdate') : ''),
       { cache: 'no-store' },
     ).then(
       function (data) {
@@ -2026,7 +2023,7 @@
     }
     return {
       source: st.source,
-      danceupSort: st.danceupSort === 'click' ? 'click' : 'pubdate',
+      danceupSort: st.danceupSort || 'pubdate',
       sourcePicked: st.sourcePicked === true,
       count: st.count,
       carousel: st.carousel,
@@ -2111,8 +2108,13 @@
       function (data) {
         var s = data && data.state
         if (!isObj(s)) return
-        st.source = s.source === 'ranking' || s.source === 'dance' || s.source === 'danceup' || s.source === 'feed' ? s.source : st.source
-        st.danceupSort = s.danceupSort === 'click' ? 'click' : 'pubdate'
+        st.source =
+          s.source === 'ranking' || s.source === 'danceup' || s.source === 'feed' || s.source === 'popular'
+            ? s.source
+            : s.source === 'dance'
+              ? 'danceup' // 旧版「舞蹈区」已移除，归并到宅舞区
+              : st.source
+        st.danceupSort = ['totalrank', 'click', 'pubdate', 'dm', 'stow'].indexOf(s.danceupSort) >= 0 ? s.danceupSort : 'pubdate'
         st.sourcePicked = s.sourcePicked === true
         st.count = num(s.count, st.count, 1, 30)
         st.carousel = s.carousel === true
@@ -2640,11 +2642,13 @@
     if (nextBtn !== null) nextBtn.disabled = st.busy
     if (srcPopular !== null) srcPopular.setAttribute('aria-pressed', st.source === 'popular' ? 'true' : 'false')
     if (srcRanking !== null) srcRanking.setAttribute('aria-pressed', st.source === 'ranking' ? 'true' : 'false')
-    if (srcDance !== null) srcDance.setAttribute('aria-pressed', st.source === 'dance' ? 'true' : 'false')
     if (srcDanceUp !== null) srcDanceUp.setAttribute('aria-pressed', st.source === 'danceup' ? 'true' : 'false')
     if (srcDanceUpSort !== null) {
-      srcDanceUpSort.textContent = st.danceupSort === 'click' ? '排序: 最热' : '排序: 最新'
-      srcDanceUpSort.setAttribute('data-on', st.danceupSort === 'click' ? '1' : '0')
+      try {
+        srcDanceUpSort.value = st.danceupSort || 'pubdate'
+      } catch (e) {
+        /* ignore */
+      }
     }
     if (srcFeed !== null) srcFeed.setAttribute('aria-pressed', st.source === 'feed' ? 'true' : 'false')
     if (surfaceVal !== null) surfaceVal.textContent = Math.round(st.surface * 100) + '%'
@@ -3705,18 +3709,8 @@
       loadQueue()
       persist()
     })
-    srcDance = el('button', 'dsbili-btn', '舞蹈区')
-    srcDance.setAttribute('title', '舞蹈区排行榜（宅舞 / 街舞 / 舞蹈综合等）')
-    srcDance.addEventListener('click', function () {
-      st.source = 'dance'
-      st.sourcePicked = true
-      st.index = -1
-      syncButtons()
-      loadQueue()
-      persist()
-    })
-    srcDanceUp = el('button', 'dsbili-btn', '舞蹈UP主')
-    srcDanceUp.setAttribute('title', '专挑完整舞蹈投稿：按宅舞/翻跳/街舞搜索高点击，过滤时长与分区、每个UP主最多2条')
+    srcDanceUp = el('button', 'dsbili-btn', '宅舞区')
+    srcDanceUp.setAttribute('title', '宅舞区：按 宅舞/翻跳 搜索完整舞蹈投稿；时长 45s~20min、每个 UP主最多 2 条')
     srcDanceUp.addEventListener('click', function () {
       st.source = 'danceup'
       st.sourcePicked = true
@@ -3742,15 +3736,28 @@
     row4.appendChild(srcFeed)
     row4.appendChild(srcPopular)
     row4.appendChild(srcRanking)
-    // 舞蹈类单独一行，避免 5 个来源挤在一行。
+    // 宅舞区单独一行：来源按钮 + 排序下拉（对齐 B 站搜索原版排序项）。
     var row4b = el('div', 'dsbili-btnrow')
-    row4b.appendChild(srcDance)
     row4b.appendChild(srcDanceUp)
-    // 舞蹈UP主排序：最新发布（默认）/ 最热
-    srcDanceUpSort = el('button', 'dsbili-btn', '排序: 最新')
-    srcDanceUpSort.setAttribute('title', '舞蹈UP主排序：最新发布 / 最热（按点击）')
-    srcDanceUpSort.addEventListener('click', function () {
-      st.danceupSort = st.danceupSort === 'click' ? 'pubdate' : 'click'
+    srcDanceUpSort = el('select', 'dsbili-sort')
+    srcDanceUpSort.setAttribute('title', '排序：综合排序 / 最多播放 / 最新发布 / 最多弹幕 / 最多收藏')
+    var sortOptions = [
+      { value: 'totalrank', label: '综合排序' },
+      { value: 'click', label: '最多播放' },
+      { value: 'pubdate', label: '最新发布' },
+      { value: 'dm', label: '最多弹幕' },
+      { value: 'stow', label: '最多收藏' },
+    ]
+    for (var si = 0; si < sortOptions.length; si += 1) {
+      ;(function (opt) {
+        var o = el('option', '', opt.label)
+        o.value = opt.value
+        srcDanceUpSort.appendChild(o)
+      })(sortOptions[si])
+    }
+    srcDanceUpSort.value = st.danceupSort || 'pubdate'
+    srcDanceUpSort.addEventListener('change', function () {
+      st.danceupSort = srcDanceUpSort.value
       syncButtons()
       if (st.source === 'danceup') loadQueue()
       persist()

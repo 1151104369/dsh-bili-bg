@@ -1067,28 +1067,27 @@ recoverApi.teardown() // 清掉结尾看门狗等定时器，避免测试进程�
 // 舞蹈区来源按钮（新增分区）
 {
   const allBtns = []
+  const allSelects = []
   ;(function walk(n) {
     if (!n) return
     if (String(n.tagName) === 'button') allBtns.push(n)
+    if (String(n.tagName) === 'select') allSelects.push(n)
     for (const c of n.children || []) walk(c)
   })(document.body)
-  const danceBtn = allBtns.find((b) => String(b.textContent) === '舞蹈区')
-  ok('dance source button exists', !!danceBtn)
-  if (danceBtn) {
-    danceBtn.emit('click')
-    ok('dance source selected after click', api.state.source === 'dance')
-  }
-  const danceUpBtn = allBtns.find((b) => String(b.textContent) === '舞蹈UP主')
-  ok('danceup source button exists', !!danceUpBtn)
+  ok('dance region button removed', !allBtns.find((b) => String(b.textContent) === '舞蹈区'))
+  const danceUpBtn = allBtns.find((b) => String(b.textContent) === '宅舞区')
+  ok('宅舞区 source button exists', !!danceUpBtn)
   if (danceUpBtn) {
     danceUpBtn.emit('click')
     ok('danceup source selected after click', api.state.source === 'danceup')
   }
-  const sortBtn = allBtns.find((b) => String(b.textContent).indexOf('排序:') === 0)
-  ok('danceup sort toggle exists (defaults to latest)', !!sortBtn && String(sortBtn.textContent) === '排序: 最新')
-  if (sortBtn) {
-    sortBtn.emit('click')
-    ok('danceup sort toggles to click/hottest', api.state.danceupSort === 'click')
+  const sortSel = allSelects[0]
+  ok('danceup sort dropdown exists', !!sortSel)
+  ok('danceup sort defaults to latest (pubdate)', !!sortSel && sortSel.value === 'pubdate')
+  if (sortSel) {
+    sortSel.value = 'click'
+    sortSel.emit('change')
+    ok('danceup sort switch to most-played', api.state.danceupSort === 'click')
   }
 }
 

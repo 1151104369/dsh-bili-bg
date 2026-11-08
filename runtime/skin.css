@@ -497,6 +497,35 @@ body:not([data-ds-dark-theme]) .dsbili-btn[data-on="1"] {
   text-align: center;
 }
 
+/* 排序下拉（宅舞区，对齐 B 站搜索原版排序项） */
+.dsbili-sort {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+  padding: 5px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-family: inherit;
+}
+.dsbili-sort:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+body:not([data-ds-dark-theme]) .dsbili-sort {
+  background: rgba(20, 30, 45, 0.05);
+  border-color: rgba(20, 30, 45, 0.12);
+}
+.dsbili-sort option {
+  background: #1b1b1c;
+  color: #e6e6e6;
+}
+body:not([data-ds-dark-theme]) .dsbili-sort option {
+  background: #ffffff;
+  color: #111111;
+}
+
 /* 分P选择器：多 P 视频时显示，成排小按钮滚动 */
 .dsbili-pages {
   display: flex;
