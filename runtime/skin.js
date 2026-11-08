@@ -2955,13 +2955,54 @@
     return st.dm === true && dmCanvas !== null && dmCtx !== null && dmList !== null && video !== null
   }
 
+  function dmPlaybackActive() {
+    if (video === null) return false
+    try {
+      // 必须「真的在播且有当前帧」：缓冲/暂停/seek 淡出时都不推进弹幕，
+      // 否则切视频时视频还没出画面，弹幕先按 0s 滚起来 → 差好几秒。
+      return video.paused !== true && video.readyState >= 2
+    } catch (e) {
+      return false
+    }
+  }
+
+  /** 把播放索引对齐到某时刻（不生成弹幕），供暂停/缓冲期间 seek 后恢复同步。 */
+  function dmIndexFor(t) {
+    if (!dmList) return 0
+    var i = 0
+    while (i < dmList.length && dmList[i].t < t) i += 1
+    return i
+  }
+
   function startDmLoop() {
     if (dmRaf !== null) return
     var loop = function () {
       dmRaf = null
       if (!dmAlive()) return
-      tickDanmaku()
-      renderDanmaku()
+      if (!dmPlaybackActive()) {
+        // 视频未出画面（缓冲/暂停/换片）：清空并冻结，等真正开播再画。
+        if (dmCtx !== null && dmCanvas !== null) {
+          try {
+            dmCtx.clearRect(0, 0, dmCanvas.width, dmCanvas.height)
+          } catch (e) {
+            /* ignore */
+          }
+        }
+        dmActive = []
+        dmLastFrame = 0
+        var t = 0
+        try {
+          t = isFinite(video.currentTime) ? video.currentTime : 0
+        } catch (e) {
+          /* ignore */
+        }
+        // 暂停期间 seek 远了：重排索引，避免恢复播放时补一堆旧弹幕。
+        if (Math.abs(t - dmLastTime) > 3) dmIndex = dmIndexFor(t)
+        dmLastTime = t
+      } else {
+        tickDanmaku()
+        renderDanmaku()
+      }
       dmRaf = global.requestAnimationFrame(loop)
     }
     dmRaf = global.requestAnimationFrame(loop)
