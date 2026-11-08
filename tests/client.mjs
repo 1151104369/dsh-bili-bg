@@ -210,6 +210,8 @@ const window = {
   setTimeout,
   clearTimeout,
   MutationObserver: undefined,
+    setInterval,
+    clearInterval,
   console,
   location: { search: '' },
   __DSH_BILI_BG__: {
@@ -567,6 +569,8 @@ const recoverWin = {
   setTimeout,
   clearTimeout,
   MutationObserver: undefined,
+    setInterval,
+    clearInterval,
   console,
   location: { search: '' },
   __DSH_BILI_BG__: window.__DSH_BILI_BG__,
@@ -593,6 +597,7 @@ ok('restored video records resume position', recoverApi.state.pendingSeek === nu
 ok('focus mode restored after restart', recoverApi.state.focusOff === true)
 const recoverBackdrop = findById(recoverDoc.body, 'dsbili-backdrop')
 ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBackdrop.getAttribute('data-idle') === '1')
+recoverApi.teardown() // 清掉结尾看门狗等定时器，避免测试进程不退出
 
 // ── 登录后高清（DASH+MSE）：开关 + 分轨清晰度 + 回退路径 ──
 {
@@ -709,6 +714,8 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
     setTimeout,
     clearTimeout,
     MutationObserver: undefined,
+    setInterval,
+    clearInterval,
     console,
     location: { search: '' },
     __DSH_BILI_BG__: window.__DSH_BILI_BG__,
@@ -925,6 +932,8 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
     requestAnimationFrame: () => 1, // 测试环境不真正跑 RAF 循环，返回值非 0 即可
     cancelAnimationFrame: () => 0,
     MutationObserver: undefined,
+    setInterval,
+    clearInterval,
     console,
     location: { search: '' },
     __DSH_BILI_BG__: {
@@ -1002,6 +1011,23 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
     playCalls[playCalls.length - 1],
   )
   feat.carousel() // 关掉，后续测试不受影响
+
+  // 结尾看门狗：MSE 不派发 ended 时，也能靠「贴近结尾」兜底收尾（高清循环/连播的关键）
+  const wdVideo = findById(doc.body, 'dsbili-video')
+  feat.carousel() // 再开连播
+  wdVideo.duration = 100
+  wdVideo.currentTime = 99.8
+  wdVideo.paused = false
+  feat.state.playing = true
+  const beforeWd = playCalls.length
+  feat.endCheck()
+  await new Promise((r) => setTimeout(r, 160))
+  ok(
+    'end watchdog advances carousel when ended not dispatched',
+    playCalls.length > beforeWd && /bvid=BV1Q222/.test(String(playCalls[playCalls.length - 1])),
+    playCalls[playCalls.length - 1],
+  )
+  feat.carousel() // 关掉
 
   // ③ 纯氛围静音墙纸：开关 + 静音锁定
   ok('wallpaper off by default', feat.state.wallpaper === false)

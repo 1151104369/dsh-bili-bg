@@ -209,6 +209,9 @@
   var loopBtn = null
   // 循环回开头后，等 seek 落地再 play（MSE 里 play 太早会被拒）。
   var seekPlayPending = false
+  // 结束处理幂等标志 + 结尾看门狗（MSE 不一定派发 ended）。
+  var endHandled = false
+  var endWatchTimer = null
   var focusBtn = null
   var wallpaperBtn = null
   var dmBtn = null
@@ -1310,6 +1313,7 @@
           }
           st.current = data
           st.failStreak = 0
+          endHandled = false // 新视频：允许结尾再次触发结束处理
           // 换视频后分P数可能变小：pid 越界则回落到第一P。
           if (Array.isArray(data.pages) && data.pages.length && st.pid > data.pages.length) st.pid = 1
           syncPages()
@@ -1481,30 +1485,75 @@
   }
 
   function onEnded() {
+    if (endHandled) return
+    endHandled = true
     if (st.carousel) {
       setStatus('播完一支，切下一支…', '')
       next()
       return
     }
-    if (st.loop !== true) {
-      st.playing = false
-      syncButtons()
-      setStatus('播放结束（循环已关）', '')
+    if (st.loop === true) {
+      // 高清（MSE）下 blob 源不参与原生 loop：seek 回 0 等 onSeeked 再播。
+      if (st.hdEffective && dashPlayer !== null) {
+        seekPlayPending = true
+        dashPlayer.seek(0)
+        return
+      }
+      // 单文件正常情况下由原生 video.loop 自循环，走不到这里；
+      // 能到这说明原生循环没生效（异常/被关），手动回 0 续播。
+      seekPlayPending = false
+      if (video !== null) {
+        try {
+          video.currentTime = 0
+        } catch (e) {
+          /* ignore */
+        }
+        tryPlay(!st.muted)
+      }
       return
     }
-    // 高清（MSE）下 blob 源不参与原生 loop，这里手动回到开头。
-    // 注意：seek 是异步的（0 处的旧缓冲可能已被回收，需要重新拉分片），
-    // 所以**不能在 seek 后立刻 play**（会被拒/暂停）——等 onSeeked 回调再播。
-    if (st.hdEffective && dashPlayer !== null) {
-      seekPlayPending = true
-      dashPlayer.seek(0)
-      return
-    }
-    // 单文件：video.loop=true 时浏览器自己循环，理论上不会走到 ended；
-    // 万一是 loop 刚被关掉的瞬间，就正常收尾。
     st.playing = false
     syncButtons()
-    setStatus('播放结束', '')
+    setStatus('播放结束（循环已关）', '')
+  }
+
+  /**
+   * 播放到结尾兜底看门狗：MSE（DASH）在部分内核下不一定派发 ended 事件，
+   * 而单曲循环/列表连播在高清下都依赖它。这里每秒检查「是否已到结尾但仍在播放状态」，
+   * 需要手动收尾时触发一次 onEnded（幂等，不会重复切歌/重播）。
+   */
+  function checkPlaybackEnd() {
+    if (!st.playing || video === null) return
+    var dur = 0
+    var t = 0
+    try {
+      dur = isFinite(video.duration) && video.duration > 0 ? video.duration : Number(st.duration) || 0
+      t = isFinite(video.currentTime) ? video.currentTime : 0
+    } catch (e) {
+      return
+    }
+    if (!(dur > 0)) return
+    // 回到中段（seek/重播）→ 允许下一次结束再次触发。
+    if (t < dur - 2) {
+      endHandled = false
+      return
+    }
+    if (endHandled) return
+    var manual = st.carousel === true || (st.loop === true && (st.hdEffective === true || dashPlayer !== null))
+    // 贴近结尾且（需要手动收尾，或 media element 已标记 ended 但没收到事件）→ 视为结束。
+    var ended = false
+    try {
+      ended = video.ended === true
+    } catch (e) {
+      ended = false
+    }
+    if (t >= dur - 0.5 && (manual || ended)) onEnded()
+  }
+
+  function startEndWatchdog() {
+    if (endWatchTimer !== null) return
+    if (typeof global.setInterval !== 'function') return
+    endWatchTimer = global.setInterval(checkPlaybackEnd, 800)
   }
 
   function onVideoError(message) {
@@ -3818,6 +3867,7 @@
       /* 没有键盘事件也无所谓 */
     }
     restoreState()
+    startEndWatchdog()
     // 拉一次登录态（只显示昵称/头像，绝不回显 Cookie）。
     refreshAuth()
     // 主题切换时重新套用透明度
@@ -3884,6 +3934,8 @@
       danmaku: toggleDanmaku,
       loop: toggleLoop,
       carousel: toggleCarousel,
+      // 供自动化/排障：手动跑一次「结尾看门狗」检测。
+      endCheck: checkPlaybackEnd,
       // 供自动化/排障：统一走当前模式的 seek（高清 → MSE 播放器；否则 media element）
       seek: function (t) {
         var target = Number(t)
@@ -3920,6 +3972,14 @@
         stopFfmpegPoll()
         stopWarmSingleFile()
         stopDanmaku()
+        if (endWatchTimer !== null) {
+          try {
+            global.clearInterval(endWatchTimer)
+          } catch (e) {
+            /* ignore */
+          }
+          endWatchTimer = null
+        }
         destroyDash()
         hideLayer()
         if (layer && layer.parentNode) layer.parentNode.removeChild(layer)
