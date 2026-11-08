@@ -122,6 +122,7 @@ const document = makeDocument()
 // 记录 POST /download 的 body，用来断言「按当前播放画质下载」请求字段。
 const downloadBodies = []
 let ffmpegInstallCalls = 0
+const openCalls = []
 
 function stubFetch(url, opts) {
   const u = String(url)
@@ -136,8 +137,7 @@ function stubFetch(url, opts) {
     payload = { ok: true, key: 'k123', image: '/dsh-bili/auth/qr?key=k123' }
   } else if (u.includes('/auth/poll')) {
     payload = { ok: true, status: 'wait', message: '等待扫码' }
-  } else if (u.includes('/ffmpeg/install')) {
-    ffmpegInstallCalls += 1
+  } else if (u.includes('/ffmpeg/install')) {    ffmpegInstallCalls += 1
     payload =
       opts && opts.method === 'POST'
         ? { ok: true, state: 'downloading', received: 0, total: 100 }
@@ -152,6 +152,9 @@ function stubFetch(url, opts) {
       downloadUrl: 'https://example.com/ffmpeg.gz',
       install: { state: 'idle', received: 0, total: 0 },
     }
+  } else if (u.includes('/open')) {
+    openCalls.push(u)
+    payload = { ok: true, url: 'https://www.bilibili.com/video/' }
   } else if (u.includes('/downloads')) {
     payload = { ok: true, list: [], dir: '/Downloads/DSH-B站背景' }
   } else if (u.includes('/download')) {
@@ -218,6 +221,7 @@ const window = {
       status: '/dsh-bili/ffmpeg',
       install: '/dsh-bili/ffmpeg/install',
     },
+    open: '/dsh-bili/open',
     defaults: { source: 'popular', count: 12, volume: 0.8, veil: 0.32, veillight: 0.3 },
   },
 }
@@ -278,6 +282,13 @@ function hasText(node, text) {
   return false
 }
 
+function hasTextIncluding(node, sub) {
+  if (!node) return false
+  if (String(node.textContent || '').includes(sub)) return true
+  for (const c of node.children || []) if (hasTextIncluding(c, sub)) return true
+  return false
+}
+
 let pass = 0
 function ok(name, cond) {
   if (cond) {
@@ -328,15 +339,27 @@ const listEl = findByClass(document.body, 'dsbili-list')
 ok('queue list rendered', !!listEl && (listEl.children || []).length === 2)
 ok('queue list rows have index+title', !!listEl && (listEl.children[0].children || []).length === 2)
 
-// 面板结构回归：固定标题栏 + 标签页 + 可滚动内容区 + 固定底部。
+// 面板结构回归：固定标题栏 + 顶部常驻（账号/视频详情）+ 标签页 + 可滚动内容 + 固定底部。
 const scrollBody = findByClass(document.body, 'dsbili-body')
 ok('panel has fixed header outside scroll body', !!scrollBody && !scrollBody.children.some((c) => c.className === 'dsbili-head'))
 ok('panel has fixed tabs outside scroll body', !!findByClass(document.body, 'dsbili-tabs'))
-const tabDefs = ['play', 'queue', 'account', 'download', 'settings']
+const tabDefs = ['play', 'queue', 'download', 'settings']
 const paneOf = (id) => (scrollBody ? scrollBody.children.find((c) => c.getAttribute && c.getAttribute('data-tab') === id) : null)
 const tabCount = (scrollBody ? scrollBody.children.filter((c) => String(c.className || '').indexOf('dsbili-pane') !== -1) : []).length
-ok('five tab panes built', tabCount === 5, tabCount)
+ok('four tab panes built', tabCount === 4, tabCount)
+ok('account tab removed', !paneOf('account'))
 ok('default tab is play', api.state.tab === 'play' && paneOf('play').getAttribute('data-active') === '1', api.state.tab)
+
+// 顶部常驻：账号 + 视频详情（不在标签页里）；视频详情可点击打开浏览器
+const topArea = findByClass(document.body, 'dsbili-top')
+ok('top area holds account + video detail', !!topArea && !!findById(topArea, 'dsbili-account') && !!findByClass(topArea, 'dsbili-now-top'))
+const nowTop = findByClass(document.body, 'dsbili-now-top')
+ok('video detail is clickable (title hint)', !!nowTop && String(nowTop.getAttribute('title')).includes('浏览器'))
+openCalls.length = 0
+api.openVideo()
+await new Promise((r) => setTimeout(r, 40))
+ok('open video hits host open route', openCalls.length === 1 && openCalls[0].includes('/dsh-bili/open?bvid='), openCalls)
+
 // 分类正确：音量在「播放」；界面不透明度/蒙版在「设置」；来源切换与列表在「列表」
 const playPane = paneOf('play')
 const settingsPane = paneOf('settings')
@@ -344,6 +367,21 @@ const queuePane = paneOf('queue')
 ok('play pane has volume', !!playPane && hasText(playPane, '音量'))
 ok('settings pane has opacity/veil', !!settingsPane && hasText(settingsPane, '界面不透明度') && hasText(settingsPane, '蒙版浓度'))
 ok('queue pane has source switcher + list', !!queuePane && hasText(queuePane, '首页推荐'))
+// 播放页顺序：控制按钮(暂停/上一支/下一支) 在进度条**上面**；音量滑动条在进度条下面
+const playKids = playPane ? playPane.children : []
+const idxControls = playKids.findIndex((c) => (c.children || []).some((x) => x.textContent === '⏭ 下一支'))
+const idxProgress = playKids.findIndex((c) => (c.children || []).some((x) => x.id === 'dsbili-progress'))
+const idxVolume = playKids.findIndex((c) => (c.children || []).some((x) => String(x.className || '').includes('dsbili-range') && hasText(c, '音量')))
+ok('layout: play controls above progress', idxControls >= 0 && idxProgress > idxControls, { idxControls, idxProgress })
+ok('layout: volume slider right below progress', idxVolume > idxProgress, { idxProgress, idxVolume })
+// 静音按钮：只在音量行、只有图标
+const muteBtnEl = findByClass(document.body, 'dsbili-mute-btn')
+ok('mute button only shows icon', !!muteBtnEl && (muteBtnEl.textContent === '🔊' || muteBtnEl.textContent === '🔇'), muteBtnEl && muteBtnEl.textContent)
+ok('mute button lives in volume row', !!muteBtnEl && !!idxVolume && hasText(playKids[idxVolume], '🔊'))
+// 专注 + 清屏 在设置页；清屏按钮不再只在悬浮胶囊
+ok('settings pane has focus toggle', !!settingsPane && hasTextIncluding(settingsPane, '专注隐藏'))
+const settingsClear = findById(document.body, 'dsbili-settings-clear')
+ok('settings pane has clear-screen button', !!settingsClear && hasTextIncluding(settingsPane, '清屏'), settingsClear && settingsClear.textContent)
 // 来源切换紧邻列表（同一标签页内，来源在上、列表在下）
 const queueKids = queuePane ? queuePane.children : []
 const qIdxSource = queueKids.findIndex((c) => (c.children || []).some((x) => hasText(x, '首页推荐')))

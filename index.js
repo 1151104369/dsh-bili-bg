@@ -15,6 +15,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -48,7 +49,7 @@ export const name = 'dsh-bili-bg'
 export const inject = []
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.6.0'
+export const VERSION = '0.7.0'
 
 const CONFIG_ROUTE = `${ROUTE_PREFIX}/config.json`
 const PLAY_ROUTE = `${ROUTE_PREFIX}/play`
@@ -63,6 +64,7 @@ const DOWNLOAD_ROUTE = `${ROUTE_PREFIX}/download`
 const DOWNLOADS_ROUTE = `${ROUTE_PREFIX}/downloads`
 const FFMPEG_ROUTE = `${ROUTE_PREFIX}/ffmpeg`
 const FFMPEG_INSTALL_ROUTE = `${ROUTE_PREFIX}/ffmpeg/install`
+const OPEN_ROUTE = `${ROUTE_PREFIX}/open`
 
 /** 已生成、尚未扫码/未过期的二维码内容（按 qrcode_key 索引，仅内存，随扫码/过期清理）。 */
 const pendingQrs = new Map()
@@ -74,6 +76,23 @@ const RUNTIME_DIR = 'runtime'
 
 function describe(error) {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** 用系统默认浏览器打开一个 URL（不经过 shell 拼接，避免命令注入）。 */
+function openExternal(url) {
+  try {
+    const child =
+      process.platform === 'win32'
+        ? spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true })
+        : process.platform === 'darwin'
+          ? spawn('open', [url], { detached: true, stdio: 'ignore' })
+          : spawn('xdg-open', [url], { detached: true, stdio: 'ignore' })
+    child.on('error', () => {})
+    child.unref()
+    return true
+  } catch {
+    return false
+  }
 }
 
 function resolveDshHome() {
@@ -218,6 +237,7 @@ export function apply(ctx) {
       status: FFMPEG_ROUTE,
       install: FFMPEG_INSTALL_ROUTE,
     },
+    open: OPEN_ROUTE,
     defaults: {
       source: 'popular',
       count: 12,
@@ -617,6 +637,26 @@ export function apply(ctx) {
                 sendJson(res, 200, { ok: true, ...getInstallState() })
               })
               .catch((error) => sendJson(res, 400, { ok: false, error: describe(error) }))
+          },
+        }),
+      )
+
+      // 在系统默认浏览器打开当前视频（客户端点「视频详情」时调用）。
+      disposers.push(
+        child.webServer.register({
+          kind: 'exact',
+          path: OPEN_ROUTE,
+          handler: (req, res) => {
+            const url = parseUrl(req)
+            const bvid = String(url.searchParams.get('bvid') || '').trim()
+            // 严格校验 BV 号，杜绝把任意字符串拼进命令/URL。
+            if (!/^BV[0-9A-Za-z]{10}$/.test(bvid)) {
+              sendJson(res, 400, { ok: false, error: '需要合法的 bvid' })
+              return
+            }
+            const target = `https://www.bilibili.com/video/${bvid}`
+            const opened = openExternal(target)
+            sendJson(res, opened ? 200 : 500, opened ? { ok: true, url: target } : { ok: false, error: '无法调起浏览器', url: target })
           },
         }),
       )

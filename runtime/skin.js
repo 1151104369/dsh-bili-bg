@@ -56,6 +56,7 @@
         install: str(cfg.ffmpeg.install),
       }
     : null
+  ROUTES.open = str(cfg.open)
 
   // ────────────────────────────── 小工具 ──────────────────────────────
 
@@ -193,6 +194,7 @@
   var bgBtn = null
   var miniPlayBtn = null
   var clearBtn = null
+  var settingsClearBtn = null
   var miniFocusBtn = null
   var rateVal = null
   var rateButtons = []
@@ -200,6 +202,7 @@
   var progressTime = null
   var lastPlaybackPersist = 0
   var accountEl = null
+  var qrOverlay = null
   var panelSetTab = null
   var srcFeed = null
   var qrPollTimer = null
@@ -1676,49 +1679,87 @@
     )
   }
 
-  /** 重绘账号区：未登录 → 二维码登录按钮；登录 → 头像+昵称+退出；扫码中 → 二维码+状态。 */
+  /**
+   * 重绘「常驻顶部」的账号区（紧凑一行）：登录 → 头像+昵称+退出；未登录 → 二维码登录按钮。
+   * 扫码二维码放到浮层（renderQrOverlay），不把顶部撑高。
+   */
   function renderAccount() {
     if (accountEl === null) return
     accountEl.textContent = ''
-    var head = el('div', 'dsbili-rowhead')
-    head.appendChild(el('span', null, '账号'))
-    accountEl.appendChild(head)
-
-    var body = el('div', 'dsbili-account-body')
-    body.id = 'dsbili-account-body'
+    var row = el('div', 'dsbili-account-row')
+    row.id = 'dsbili-account-body'
 
     if (st.loggedIn && st.account && st.account.uname) {
-      var info = el('div', 'dsbili-account-info')
       if (st.account.face) {
         var av = el('img', 'dsbili-account-avatar')
         av.alt = '头像'
         av.src = st.account.face
-        info.appendChild(av)
+        row.appendChild(av)
       }
-      info.appendChild(el('span', 'dsbili-account-name', st.account.uname))
-      body.appendChild(info)
-      var logoutBtn = el('button', 'dsbili-btn dsbili-account-logout', '退出登录')
+      row.appendChild(el('span', 'dsbili-account-name', st.account.uname))
+      var logoutBtn = el('button', 'dsbili-btn dsbili-account-logout', '退出')
       logoutBtn.addEventListener('click', doLogout)
-      body.appendChild(logoutBtn)
-    } else if (st.qr && st.qr.active) {
-      var wrap = el('div', 'dsbili-qr-wrap')
-      var qi = el('img', 'dsbili-qr-img')
-      qi.alt = '扫码登录'
-      qi.src = str(ROUTES.auth.image) + '?key=' + encodeURIComponent(st.qr.key || '')
-      wrap.appendChild(qi)
-      body.appendChild(wrap)
-      body.appendChild(el('div', 'dsbili-qr-status', st.qr.statusText || '…'))
-      var cancelBtn = el('button', 'dsbili-btn', '取消')
-      cancelBtn.addEventListener('click', stopQrLogin)
-      body.appendChild(cancelBtn)
+      row.appendChild(logoutBtn)
     } else {
       var loginBtn = el('button', 'dsbili-btn dsbili-account-login', '二维码登录')
       loginBtn.addEventListener('click', startQrLogin)
-      body.appendChild(loginBtn)
-      if (st.authBusy) body.appendChild(el('div', 'dsbili-account-status', '检测登录态…'))
+      row.appendChild(loginBtn)
+      if (st.authBusy) row.appendChild(el('div', 'dsbili-account-status', '检测登录态…'))
     }
 
-    accountEl.appendChild(body)
+    accountEl.appendChild(row)
+    renderQrOverlay()
+  }
+
+  /** 扫码登录浮层：只在扫码中显示，避免把常驻顶部撑高。 */
+  function renderQrOverlay() {
+    if (qrOverlay === null) return
+    qrOverlay.textContent = ''
+    if (!(st.qr && st.qr.active)) {
+      qrOverlay.removeAttribute('data-open')
+      return
+    }
+    qrOverlay.setAttribute('data-open', '1')
+    var card = el('div', 'dsbili-qr-card')
+    card.appendChild(el('div', 'dsbili-qr-title', '扫码登录 B 站'))
+    var qi = el('img', 'dsbili-qr-img')
+    qi.alt = '扫码登录'
+    qi.src = str(ROUTES.auth.image) + '?key=' + encodeURIComponent(st.qr.key || '')
+    card.appendChild(qi)
+    card.appendChild(el('div', 'dsbili-qr-status', st.qr.statusText || '…'))
+    var cancelBtn = el('button', 'dsbili-btn', '取消')
+    cancelBtn.addEventListener('click', stopQrLogin)
+    card.appendChild(cancelBtn)
+    qrOverlay.appendChild(card)
+  }
+
+  /** 在系统默认浏览器打开当前 B 站视频。 */
+  function openCurrentVideo() {
+    var bvid = st.current && st.current.bvid ? st.current.bvid : ''
+    if (!bvid) {
+      setStatus('还没有正在播放的视频', 'error')
+      return
+    }
+    var url = 'https://www.bilibili.com/video/' + encodeURIComponent(bvid)
+    if (ROUTES.open) {
+      fetchJson(ROUTES.open + '?bvid=' + encodeURIComponent(bvid), { cache: 'no-store' }).then(
+        function () {},
+        function () {
+          // 宿主打不开就退浏览器 window.open
+          try {
+            global.open(url, '_blank')
+          } catch (e) {
+            setStatus('打不开浏览器：' + url, 'error')
+          }
+        },
+      )
+      return
+    }
+    try {
+      global.open(url, '_blank')
+    } catch (e) {
+      setStatus('打不开浏览器：' + url, 'error')
+    }
   }
 
   // ────────────────────────────── 队列 ──────────────────────────────
@@ -2368,13 +2409,17 @@
       playBtn.setAttribute('aria-pressed', st.playing ? 'true' : 'false')
     }
     if (muteBtn !== null) {
-      muteBtn.textContent = st.muted ? '🔇 已静音' : '🔊 有声'
+      // 只留喇叭图标（文案在 title 里），放音量行右侧
+      muteBtn.textContent = st.muted ? '🔇' : '🔊'
+      muteBtn.setAttribute('title', st.muted ? '已静音，点击开启声音' : '点击静音')
+      muteBtn.setAttribute('data-on', st.muted ? '0' : '1')
       muteBtn.setAttribute('aria-pressed', st.muted ? 'false' : 'true')
     }
     if (fitBtn !== null) fitBtn.textContent = st.fit === 'cover' ? '显示: 铺满' : '显示: 完整'
     if (bgBtn !== null) bgBtn.textContent = st.preserveBg ? '背景: 保留' : '背景: 留空'
     if (miniPlayBtn !== null) miniPlayBtn.textContent = st.playing ? '⏸' : '▶'
     if (clearBtn !== null) clearBtn.setAttribute('data-on', st.clear ? '1' : '0')
+    if (settingsClearBtn !== null) settingsClearBtn.setAttribute('data-on', st.clear ? '1' : '0')
     if (miniFocusBtn !== null) miniFocusBtn.setAttribute('data-on', st.focusOff ? '1' : '0')
     if (rateVal !== null) rateVal.textContent = String(st.rate) + 'x'
     for (var rbi = 0; rbi < rateButtons.length; rbi += 1) {
@@ -2694,11 +2739,19 @@
     head.addEventListener('pointerup', endPanelDrag)
     head.addEventListener('pointercancel', endPanelDrag)
 
-    // ── 标签页：把「播放 / 列表 / 账号 / 下载 / 设置」分门别类，避免一屏太乱 ──
+    // 顶部常驻区：账号 + 视频详情（不随标签页切换，始终可见）
+    // 扫码登录浮层（绝对定位覆盖面板，不占顶部高度）
+    qrOverlay = el('div', 'dsbili-qr-overlay')
+    qrOverlay.id = 'dsbili-qr-overlay'
+    panel.appendChild(qrOverlay)
+
+    var topArea = el('div', 'dsbili-top')
+    panel.appendChild(topArea)
+
+    // ── 标签页：「播放 / 列表 / 下载 / 设置」（账号与视频详情常驻顶部，不占标签页） ──
     var TAB_DEFS = [
       { id: 'play', label: '播放' },
       { id: 'queue', label: '列表' },
-      { id: 'account', label: '账号' },
       { id: 'download', label: '下载' },
       { id: 'settings', label: '设置' },
     ]
@@ -2767,19 +2820,23 @@
     inputRow.appendChild(goBtn)
     pane('play').appendChild(inputRow)
 
-    // 当前
-    var now = el('div', 'dsbili-now')
+    // 账号（常驻顶部，紧凑一行；二维码登录在浮层里展开，不撑高顶部）
+    accountEl = el('div', 'dsbili-account')
+    accountEl.id = 'dsbili-account'
+    topArea.appendChild(accountEl)
+    renderAccount()
+
+    // 当前视频详情（常驻顶部）：标题/信息可点击，在系统浏览器打开该视频
+    var now = el('div', 'dsbili-now dsbili-now-top')
     titleEl = el('div', 'dsbili-now-title', '未播放')
     metaEl = el('div', 'dsbili-now-meta', '输入 BV 号开始')
     now.appendChild(titleEl)
     now.appendChild(metaEl)
-    pane('play').appendChild(now)
-
-    // 账号区：二维码登录 / 账号信息 / 退出（内容由 renderAccount 动态重绘）。
-    accountEl = el('div', 'dsbili-account')
-    accountEl.id = 'dsbili-account'
-    pane('account').appendChild(accountEl)
-    renderAccount()
+    now.setAttribute('title', '点击在浏览器打开该视频')
+    now.addEventListener('click', function () {
+      openCurrentVideo()
+    })
+    topArea.appendChild(now)
 
     // 进度条（可拖动）
     var progRow = el('div', 'dsbili-row')
@@ -2909,7 +2966,7 @@
       loadFfmpegStatus()
     }
 
-    // 播放控制
+    // 播放控制：暂停/上一支/下一支 —— 放到进度条**上面**
     var row1 = el('div', 'dsbili-btnrow')
     playBtn = el('button', 'dsbili-btn', '▶ 播放')
     playBtn.addEventListener('click', togglePlay)
@@ -2920,17 +2977,7 @@
     row1.appendChild(playBtn)
     row1.appendChild(prevBtn)
     row1.appendChild(nextBtn)
-    pane('play').appendChild(row1)
-
-    // 声音/专注
-    var row2 = el('div', 'dsbili-btnrow')
-    muteBtn = el('button', 'dsbili-btn', '🔊 有声')
-    muteBtn.addEventListener('click', toggleMute)
-    focusBtn = el('button', 'dsbili-btn', '🌙 专注隐藏')
-    focusBtn.addEventListener('click', toggleFocus)
-    row2.appendChild(muteBtn)
-    row2.appendChild(focusBtn)
-    pane('play').appendChild(row2)
+    pane('play').insertBefore(row1, progRow)
 
     // 显示方式：完整（按宽度靠顶、不裁切）/ 铺满（填满、可裁切）
     var rowFit = el('div', 'dsbili-btnrow')
@@ -2951,6 +2998,17 @@
     })
     rowFit.appendChild(bgBtn)
     pane('settings').appendChild(rowFit)
+
+    // 专注隐藏 + 清屏（原来清屏只在悬浮胶囊上有）
+    var focusRow = el('div', 'dsbili-btnrow')
+    focusBtn = el('button', 'dsbili-btn', '🌙 专注隐藏')
+    focusBtn.addEventListener('click', toggleFocus)
+    focusRow.appendChild(focusBtn)
+    settingsClearBtn = el('button', 'dsbili-btn', '清屏（隐藏中间内容）')
+    settingsClearBtn.id = 'dsbili-settings-clear'
+    settingsClearBtn.addEventListener('click', toggleClear)
+    focusRow.appendChild(settingsClearBtn)
+    pane('settings').appendChild(focusRow)
 
     // 倍速
     var rateRow = el('div', 'dsbili-row')
@@ -3042,10 +3100,14 @@
     row4.appendChild(srcPopular)
     row4.appendChild(srcRanking)
 
-    // 音量
+    // 音量（和进度条一样是滑动条，紧挨着放在进度下面）；静音按钮只留喇叭图标，放本行右侧
     var volRow = el('div', 'dsbili-row')
     var volHead = el('div', 'dsbili-rowhead')
     volHead.appendChild(el('span', null, '音量'))
+    muteBtn = el('button', 'dsbili-btn dsbili-mute-btn', '🔊')
+    muteBtn.setAttribute('title', '静音 / 取消静音')
+    muteBtn.addEventListener('click', toggleMute)
+    volHead.appendChild(muteBtn)
     volRange = el('input', 'dsbili-range')
     volRange.type = 'range'
     volRange.min = '0'
@@ -3063,7 +3125,8 @@
     })
     volRow.appendChild(volHead)
     volRow.appendChild(volRange)
-    pane('play').appendChild(volRow)
+    // 放在进度条下面、高清区前面（都是滑动条，聚在一起）
+    pane('play').insertBefore(volRow, hdRow)
 
     // 界面不透明度
     var surfRow = el('div', 'dsbili-row')
@@ -3242,6 +3305,7 @@
       },
       open: openPanel,
       close: closePanel,
+      openVideo: openCurrentVideo,
       tab: function (id) {
         if (panelSetTab) panelSetTab(id)
       },

@@ -356,6 +356,12 @@ ok(
   !!(cfg.auth && cfg.auth.create && cfg.auth.image && cfg.auth.poll && cfg.auth.status && cfg.auth.logout),
   cfg.auth,
 )
+// 「视频详情点击打开浏览器」路由：只接受合法 BV 号（非法 → 400，不调起浏览器）
+ok('config exposes open route', typeof cfg.open === 'string' && cfg.open.includes('/dsh-bili/open'), cfg.open)
+const openBad = await (await fetch(base + '/dsh-bili/open?bvid=not-a-bv')).json()
+ok('open route rejects invalid bvid', openBad.ok === false && typeof openBad.error === 'string', openBad)
+const openMissing = await (await fetch(base + '/dsh-bili/open')).json()
+ok('open route requires bvid', openMissing.ok === false, openMissing)
 
 // ② poll 状态解析回归：新版接口状态在 data.code（顶层 code 恒为 0），绝不能误判为"登录成功"
 const pollWait = parsePoll({ code: 0, message: 'OK', data: { url: '', refresh_token: '', timestamp: 0, code: 86101, message: '未扫码' } }, {})

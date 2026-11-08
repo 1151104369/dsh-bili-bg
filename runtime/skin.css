@@ -744,3 +744,105 @@ body:not([data-ds-dark-theme]) .dsbili-item:hover {
   direction: rtl; /* 太长时优先保留尾部（目录名更有信息量） */
   text-align: left;
 }
+
+/* ── 顶部常驻区（账号 + 视频详情）+ 扫码浮层 + 音量行静音图标 ── */
+.dsbili-top {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px 16px 9px;
+  border-bottom: 1px solid rgba(198, 220, 246, 0.14);
+}
+
+.dsbili-top .dsbili-account {
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.dsbili-account-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+}
+
+.dsbili-account-row .dsbili-account-name {
+  flex: 1 1 auto;
+}
+
+.dsbili-account-row .dsbili-account-avatar {
+  width: 22px;
+  height: 22px;
+}
+
+.dsbili-account-row .dsbili-account-login,
+.dsbili-account-row .dsbili-account-logout {
+  align-self: center;
+  padding: 3px 9px;
+  font-size: 11px;
+}
+
+/* 视频详情可点击：在系统浏览器打开 */
+.dsbili-now-top {
+  padding: 0;
+  cursor: pointer;
+}
+
+.dsbili-now-top:hover .dsbili-now-title {
+  text-decoration: underline;
+}
+
+/* 音量行右侧只放喇叭图标 */
+.dsbili-mute-btn {
+  padding: 1px 7px;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+/* 扫码登录浮层（覆盖面板，不撑高常驻顶部） */
+.dsbili-qr-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 14px;
+}
+
+.dsbili-qr-overlay[data-open="1"] {
+  display: flex;
+}
+
+.dsbili-qr-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px;
+  max-width: 250px;
+  border-radius: 12px;
+  background: rgba(18, 26, 38, 0.98);
+  border: 1px solid rgba(198, 220, 246, 0.18);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+body:not([data-ds-dark-theme]) .dsbili-qr-card {
+  background: rgba(252, 253, 255, 0.98);
+  border-color: rgba(20, 30, 45, 0.14);
+}
+
+.dsbili-qr-title {
+  font-weight: 600;
+}
+
+.dsbili-qr-card .dsbili-qr-img {
+  width: 170px;
+  height: 170px;
+  padding: 4px;
+  background: #fff;
+  border-radius: 6px;
+}
