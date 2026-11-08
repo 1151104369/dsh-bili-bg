@@ -1075,6 +1075,12 @@ recoverApi.teardown() // 清掉结尾看门狗等定时器，避免测试进程�
     danceBtn.emit('click')
     ok('dance source selected after click', api.state.source === 'dance')
   }
+  const danceUpBtn = allBtns.find((b) => String(b.textContent) === '舞蹈UP主')
+  ok('danceup source button exists', !!danceUpBtn)
+  if (danceUpBtn) {
+    danceUpBtn.emit('click')
+    ok('danceup source selected after click', api.state.source === 'danceup')
+  }
 }
 
 // 清理主 runtime 的轮询定时器，否则下载轮询会让测试进程无法退出。
