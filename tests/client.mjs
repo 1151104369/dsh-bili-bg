@@ -813,6 +813,38 @@ ok('focus mode keeps video hidden after restart', !!recoverBackdrop && recoverBa
   })())
   hdServerFallback = false
   hdWin.__DSH_BILI_DASH__ = fakeDashLib
+
+  // 高清 + 专注模式回归：与单文件路径一致——开启专注后重载高清，背景层必须保持隐藏
+  //（data-idle=1），不能因为 startDash() 里无条件 showLayer() 又把画面亮出来
+  //（这正是「高清下专注状态重启后记不住」的根因）。
+  hdApi.focus()
+  ok('hd focus toggled on', hdApi.state.focusOff === true)
+  playerCalls.length = 0
+  hdApi.play('BV1HDTEST')
+  await new Promise((r) => setTimeout(r, 160))
+  ok('hd re-enables MSE while focused', hdApi.state.hdEffective === true, hdApi.state.hdEffective)
+  const hdFocusBackdrop = findById(hdDoc.body, 'dsbili-backdrop')
+  ok(
+    'hd + focus keeps backdrop hidden (data-idle=1)',
+    !!hdFocusBackdrop && hdFocusBackdrop.getAttribute('data-idle') === '1',
+    hdFocusBackdrop && hdFocusBackdrop.getAttribute('data-idle'),
+  )
+  ok(
+    'hd + focus does not autoplay (paused while hidden)',
+    (() => {
+      const v = findById(hdDoc.body, 'dsbili-video')
+      return !!v && v.paused !== false
+    })(),
+  )
+  hdApi.focus()
+  await new Promise((r) => setTimeout(r, 30))
+  ok(
+    'hd focus restore makes backdrop visible (data-idle=0)',
+    (() => {
+      const b = findById(hdDoc.body, 'dsbili-backdrop')
+      return !!b && b.getAttribute('data-idle') === '0'
+    })(),
+  )
   hdApi.teardown()
 }
 

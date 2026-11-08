@@ -939,7 +939,15 @@
         return
       }
     }
-    showLayer()
+    // 专注模式：与单文件路径保持一致——只把首帧缓冲好，但整层保持 hidden（data-idle=1），
+    // 不把画面亮出来。data-shown 仍由 reveal 设置，用户点「恢复显示」时能立即出画面。
+    // 之前这里无条件 showLayer()，会让「高清 + 专注」把画面重新露出来，且重启后专注状态丢失
+    //（非高清路径尊重 focusOff，故高清/非高清表现不一致）。
+    if (st.focusOff) {
+      if (layer !== null) layer.setAttribute('data-idle', '1')
+    } else {
+      showLayer()
+    }
     // 注意：不在这是调用 tryPlay —— 等 MSE ready（见上面的 onStatus('ready')）。
     updateNow()
     syncButtons()
@@ -987,13 +995,19 @@
       }
       revealed = true
       cleanup()
+      // 首帧已可显示：先把 video 标成「可显」（data-shown），让「恢复显示」能立即出画面；
+      // 但专注模式下整层保持 hidden（data-idle=1），不自动开播、也不覆写「专注保持中」状态。
       try {
         if (video) video.setAttribute('data-shown', '1')
       } catch (e) {
         /* ignore */
       }
-      setStatus('高清播放中（' + (height ? height + 'P' : 'DASH') + '）', 'ok')
-      if (dashWantPlay && video && video.paused) tryPlay(!st.muted)
+      if (st.focusOff) {
+        setStatus('高清专注保持中（点「恢复显示」回来看）', '')
+      } else {
+        setStatus('高清播放中（' + (height ? height + 'P' : 'DASH') + '）', 'ok')
+        if (dashWantPlay && video && video.paused) tryPlay(!st.muted)
+      }
       syncButtons()
       syncQuality()
       persist()
