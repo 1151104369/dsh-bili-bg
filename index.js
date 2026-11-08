@@ -25,6 +25,7 @@ import {
   openDashMedia,
   resolveBvid,
   resolveBvidHd,
+  friendlyError,
 } from './lib/bili.js'
 import {
   generateQr,
@@ -50,7 +51,7 @@ export const name = 'dsh-bili-bg'
 export const inject = []
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.10.3'
+export const VERSION = '0.10.4'
 
 const CONFIG_ROUTE = `${ROUTE_PREFIX}/config.json`
 const PLAY_ROUTE = `${ROUTE_PREFIX}/play`
@@ -328,7 +329,7 @@ export function apply(ctx) {
                 }
                 sendJson(res, result.ok ? 200 : 422, result)
               })
-              .catch((error) => sendJson(res, 500, { ok: false, error: describe(error) }))
+              .catch((error) => sendJson(res, 500, { ok: false, error: friendlyError(error) }))
           },
         }),
       )
@@ -452,7 +453,7 @@ export function apply(ctx) {
               source === 'feed' || source === 'danceup' ? buildCookieHeader(homeDir) : ''
             fetchQueue(source, count, cookie, order)
               .then((result) => sendJson(res, 200, { ok: true, ...result }))
-              .catch((error) => sendJson(res, 502, { ok: false, error: describe(error) }))
+              .catch((error) => sendJson(res, 502, { ok: false, error: friendlyError(error) }))
           },
         }),
       )
