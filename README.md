@@ -182,4 +182,29 @@ tests/mse.mjs       MSE 播放器单测（ISO-BMFF 解析 + 装配/回退）
 node tests/smoke.mjs    # 宿主冒烟（需外网访问 B 站接口）
 node tests/client.mjs   # 客户端 DOM stub 测试
 node tests/mse.mjs      # MSE 播放器单测（ISO-BMFF 解析 + 装配/回退）
+npm test                # client + mse
+npm run test:all        # 全部（含联网 smoke）
 ```
+
+## 发布（npm）
+
+一键发布脚本：`scripts/release.mjs`（Windows 可双击 `release.cmd`）。
+
+```bash
+node scripts/release.mjs            # 交互选择 patch / minor / major / 自定义版本
+node scripts/release.mjs patch      # 0.11.0 → 0.11.1
+node scripts/release.mjs minor      # 新功能：0.11.0 → 0.12.0
+node scripts/release.mjs 1.2.3      # 指定版本号
+node scripts/release.mjs patch --dry  # 演练：只 bump+测试，不提交/发布/推送
+```
+
+脚本会依次：校验工作区干净 → bump `package.json` 与 `index.js` 的 `VERSION` →
+跑测试（默认 client+mse，`--smoke` 加宿主冒烟）→ `git commit` → 提示输入 npm
+二步验证码（隐藏输入，也可用 `NPM_OTP` 环境变量）→ `npm publish` 到官方源 →
+`git push`。
+
+其它参数：`--no-push` 不推送、`--no-tests` 跳过测试、`--yes` 免确认、
+`--allow-dirty` 允许脏工作区（不推荐）。
+
+> 发布需要先在 npm 启用 2FA（验证器 App），或用带 Bypass 2FA 的 granular token。
+> 默认发布源为 `https://registry.npmjs.org`，可用 `NPM_REGISTRY` 覆盖。
