@@ -33,6 +33,11 @@
   "engines": {
     "node": ">=18"
   },
+  "scripts": {
+    "test": "node tests/client.mjs && node tests/mse.mjs",
+    "test:all": "node tests/client.mjs && node tests/mse.mjs && node tests/smoke.mjs",
+    "release": "node scripts/release.mjs"
+  },
   "keywords": [
     "dsh-plugin",
     "deepseek-harness",
